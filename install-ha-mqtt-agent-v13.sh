@@ -79,7 +79,7 @@ EOF
 install_all() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux
+  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc
 
   ensure_logs
   install -d -m 0755 /usr/local/bin

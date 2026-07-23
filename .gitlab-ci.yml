@@ -1,0 +1,96 @@
+stages:
+  - test
+
+lint:
+  stage: test
+  image: ubuntu:22.04
+  tags:
+    - ubuntu-test-runner
+  script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends shellcheck
+    - shellcheck install-ha-mqtt-agent-v13.sh
+
+smoke-test:
+  stage: test
+  image: ubuntu:22.04
+  tags:
+    - ubuntu-test-runner
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    MQTT_HOST: test-broker.invalid
+    MQTT_PORT: "1883"
+    MQTT_USER: test-user
+    MQTT_PASS: test-pass
+  script:
+    - apt-get update -qq
+    # Base image is missing a few things a real target host would already have.
+    - apt-get install -y --no-install-recommends hostname procps psmisc ca-certificates
+    - bash -n install-ha-mqtt-agent-v13.sh
+
+    # Stub the two things that need a real broker/systemd, so the rest of the
+    # script's logic (file layout, payload construction, env validation) can
+    # be exercised on a plain docker executor.
+    - mkdir -p /usr/local/bin
+    - printf '#!/bin/bash\necho "$@" >> /tmp/mqtt-publish.log\nexit 0\n' > /usr/local/bin/mosquitto_pub
+    - chmod +x /usr/local/bin/mosquitto_pub
+    - printf '#!/bin/bash\nexit 0\n' > /usr/local/bin/systemctl
+    - chmod +x /usr/local/bin/systemctl
+
+    - echo "== install must fail without MQTT config =="
+    - |
+      if env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash install-ha-mqtt-agent-v13.sh -install; then
+        echo "expected failure with missing MQTT config, but install succeeded" >&2
+        exit 1
+      fi
+
+    - echo "== install =="
+    - bash install-ha-mqtt-agent-v13.sh -install
+
+    - echo "== verify installed files =="
+    - test -f /usr/local/bin/ha-mqtt-metrics.sh
+    - test -f /usr/local/bin/ha-mqtt-updates.sh
+    - test -f /usr/local/bin/ha-mqtt-discovery.sh
+    - test -f /usr/local/lib/ha-mqtt-agent/common.sh
+    - test -f /etc/ha-mqtt-agent/env
+    - test -f /etc/systemd/system/ha-mqtt-metrics.service
+    - test -f /etc/systemd/system/ha-mqtt-metrics.timer
+    - test -f /etc/systemd/system/ha-mqtt-updates.service
+    - test -f /etc/systemd/system/ha-mqtt-updates.timer
+    - test -f /etc/systemd/system/ha-mqtt-discovery.service
+    - test -f /etc/logrotate.d/mqtt-agent
+
+    # systemctl is stubbed, so "enable --now" during install never actually
+    # ran the discovery unit for real — invoke it directly to test it.
+    - echo "== run discovery script directly =="
+    - /usr/local/bin/ha-mqtt-discovery.sh
+
+    - echo "== verify expected mqtt publishes happened =="
+    - grep -q -- '-t servers/.*/heartbeat -m online' /tmp/mqtt-publish.log
+    - grep -q -- '-t servers/.*/state ' /tmp/mqtt-publish.log
+    - grep -q -- '-t servers/.*/updates ' /tmp/mqtt-publish.log
+    - grep -q -- '-t homeassistant/sensor/.*/agent_online/config' /tmp/mqtt-publish.log
+    - grep -q -- '-t homeassistant/sensor/.*/cpu/config' /tmp/mqtt-publish.log
+
+    - echo "== state payload is valid JSON with the expected numeric fields =="
+    - |
+      state_json="$(grep -- '-t servers/.*/state ' /tmp/mqtt-publish.log | tail -1 | sed 's/.*-m //')"
+      echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number")' >/dev/null
+
+    - echo "== re-running install is idempotent =="
+    - bash install-ha-mqtt-agent-v13.sh -install
+
+    - echo "== uninstall =="
+    - bash install-ha-mqtt-agent-v13.sh -uninstall
+
+    - echo "== verify everything was removed =="
+    - test ! -e /usr/local/bin/ha-mqtt-metrics.sh
+    - test ! -e /usr/local/bin/ha-mqtt-updates.sh
+    - test ! -e /usr/local/bin/ha-mqtt-discovery.sh
+    - test ! -d /usr/local/lib/ha-mqtt-agent
+    - test ! -d /etc/ha-mqtt-agent
+    - test ! -f /etc/systemd/system/ha-mqtt-metrics.service
+    - test ! -f /etc/logrotate.d/mqtt-agent
+  only:
+    - master
+    - merge_requests
