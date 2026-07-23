@@ -140,7 +140,7 @@ read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
 disk_free_gb=$(awk -v f="$free" 'BEGIN {printf "%.1f", f/1024/1024/1024}')
 disk_total_gb=$(awk -v t="$total" 'BEGIN {printf "%.1f", t/1024/1024/1024}')
 
-payload="$(jq -n --arg host "$DEVICE_NAME" \
+payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --argjson cpu "$cpu_used" \
   --argjson ram "$mem_used_pct" \
   --argjson disk_free_gb "$disk_free_gb" \
@@ -253,7 +253,7 @@ DEVICE_NAME="$(printf '%s' "$HOSTNAME_SHORT" | sed 's/^./\u&/')"
 HEARTBEAT_TOPIC="servers/$DEVICE_ID/heartbeat"
 STATE_TOPIC="servers/$DEVICE_ID/state"
 
-device_json="$(jq -n --arg id "$DEVICE_ID" --arg name "$DEVICE_NAME" '{identifiers:[$id],manufacturer:"DIY",model:"Linux Server",name:$name}')"
+device_json="$(jq -nc --arg id "$DEVICE_ID" --arg name "$DEVICE_NAME" '{identifiers:[$id],manufacturer:"DIY",model:"Linux Server",name:$name}')"
 
 pub_cfg_sensor() {
   local object="$1"; shift
@@ -273,7 +273,7 @@ pub_cfg_sensor() {
 }
 
 # Agent Online (sensor with expire_after so it becomes Unavailable)
-agent_online_cfg="$(jq -n \
+agent_online_cfg="$(jq -nc \
   --arg name "Agent Online" \
   --arg obj "agent_online" \
   --arg def_ent "sensor.${DEVICE_ID}_agent_online" \
@@ -283,7 +283,7 @@ agent_online_cfg="$(jq -n \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, avty_t:$stat, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, icon:"mdi:lan-connect", dev:$dev}')"
 
-cpu_cfg="$(jq -n \
+cpu_cfg="$(jq -nc \
   --arg name "CPU Usage" \
   --arg obj "cpu" \
   --arg def_ent "sensor.${DEVICE_ID}_cpu" \
@@ -294,7 +294,7 @@ cpu_cfg="$(jq -n \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.cpu }}", unit_of_meas:"%", dev_cla:"power_factor", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
 
-ram_cfg="$(jq -n \
+ram_cfg="$(jq -nc \
   --arg name "RAM Used %" \
   --arg obj "ram" \
   --arg def_ent "sensor.${DEVICE_ID}_ram" \
@@ -305,7 +305,7 @@ ram_cfg="$(jq -n \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.ram }}", unit_of_meas:"%", dev_cla:"power_factor", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
 
-disk_free_cfg="$(jq -n \
+disk_free_cfg="$(jq -nc \
   --arg name "Disk Free" \
   --arg obj "disk_free" \
   --arg def_ent "sensor.${DEVICE_ID}_disk_free" \
@@ -316,7 +316,7 @@ disk_free_cfg="$(jq -n \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.disk_free_gb }}", unit_of_meas:"GB", stat_cla:"measurement", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
 
-disk_total_cfg="$(jq -n \
+disk_total_cfg="$(jq -nc \
   --arg name "Disk Total" \
   --arg obj "disk_total" \
   --arg def_ent "sensor.${DEVICE_ID}_disk_total" \
@@ -327,7 +327,7 @@ disk_total_cfg="$(jq -n \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.disk_total_gb }}", unit_of_meas:"GB", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
 
-updates_cfg="$(jq -n \
+updates_cfg="$(jq -nc \
   --arg name "Updates Pending" \
   --arg obj "updates" \
   --arg def_ent "sensor.${DEVICE_ID}_updates" \
@@ -359,7 +359,7 @@ while IFS= read -r line; do
   obj="ip_${safe_iface}"
   def_ent="sensor.${DEVICE_ID}_${obj}"
 
-  ip_cfg="$(jq -n \
+  ip_cfg="$(jq -nc \
     --arg name "$name" \
     --arg obj "$obj" \
     --arg def_ent "$def_ent" \
