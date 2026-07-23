@@ -12,6 +12,7 @@ ACTION="${1:- -install}"
 # script (gitignored) with MQTT_HOST/MQTT_PORT/MQTT_USER/MQTT_PASS set.
 # Only required for -install; -uninstall doesn't touch the broker.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # .env is intentionally gitignored/optional, not present in the repo
 [ -f "$SCRIPT_DIR/.env" ] && source "$SCRIPT_DIR/.env"
 
 MQTT_PORT="${MQTT_PORT:-1883}"

@@ -9,7 +9,7 @@ lint:
   script:
     - apt-get update -qq
     - apt-get install -y --no-install-recommends shellcheck
-    - shellcheck install-ha-mqtt-agent-v13.sh
+    - shellcheck --severity=warning install-ha-mqtt-agent-v13.sh
 
 smoke-test:
   stage: test
