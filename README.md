@@ -1,0 +1,94 @@
+# HA MQTT Agent
+
+A single bash installer that turns any Debian/Ubuntu Linux host into a lightweight
+monitoring agent for Home Assistant, publishing system metrics over MQTT with
+[Home Assistant MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
+so sensors show up automatically — no YAML configuration needed on the HA side.
+
+## What it monitors
+
+Per host, the agent publishes and auto-discovers these entities in Home Assistant:
+
+| Sensor | Source | Update interval |
+|---|---|---|
+| Agent Online | heartbeat topic (used as the `availability` topic for every other sensor) | every `HEARTBEAT_INTERVAL` |
+| CPU Usage (%) | `/proc/stat` delta over ~0.5s | every `HEARTBEAT_INTERVAL` |
+| RAM Used (%) | `free` | every `HEARTBEAT_INTERVAL` |
+| Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
+| Updates Pending | `apt-show-versions -u -b` count | hourly |
+| IP (`<iface>`) | one sensor per active global IPv4 interface | every `HEARTBEAT_INTERVAL` |
+
+All sensors use `expire_after` tied to the heartbeat, so they flip to "unavailable"
+in Home Assistant if the agent stops publishing (host down, service crashed, etc.)
+instead of silently showing stale values.
+
+## Requirements
+
+- Debian/Ubuntu-based host (uses `apt-get`/`apt-show-versions`), root access
+- Network access to an MQTT broker (tested against Home Assistant's built-in Mosquitto broker)
+- Outbound internet access for the hourly `apt-get update` used to count pending updates
+
+The installer installs its own dependencies (`jq`, `mosquitto-clients`,
+`apt-show-versions`, `logrotate`, `iproute2`, etc.) via `apt-get`.
+
+## Configuration
+
+The script needs `MQTT_HOST`, `MQTT_USER`, and `MQTT_PASS` (and optionally
+`MQTT_PORT`, default `1883`) at install time. These are **not** hardcoded in the
+script — provide them either as environment variables, or in a `.env` file placed
+next to the script (this file is gitignored and must never be committed):
+
+```bash
+# .env
+MQTT_HOST="homeassistant.example.com"
+MQTT_PORT="1883"
+MQTT_USER="mqtt"
+MQTT_PASS="your-mqtt-password"
+```
+
+`-uninstall` doesn't touch the broker and doesn't require any of these to be set.
+
+Other tunables live near the top of the script and can be edited directly if needed:
+
+- `HEARTBEAT_INTERVAL` (default `30`s) — how often metrics/heartbeat are published
+- `SENSOR_EXPIRE` (default `120`s) — how long before a sensor is marked unavailable with no update
+
+## Usage
+
+```bash
+# install or upgrade (idempotent — safe to re-run)
+sudo bash install-ha-mqtt-agent-v13.sh -install
+
+# remove everything the installer created
+sudo bash install-ha-mqtt-agent-v13.sh -uninstall
+```
+
+Device ID/name are derived from the host's own hostname at runtime — no per-host
+edits to the script are needed beyond the shared MQTT config.
+
+## How it works
+
+Running `-install` writes and enables the following on the target host:
+
+- `/etc/ha-mqtt-agent/env` — resolved MQTT config for the generated scripts to source
+- `/usr/local/lib/ha-mqtt-agent/common.sh` — shared logging helper (redirects stdout/stderr to the log file)
+- `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/disk state, and per-interface IPs
+- `/usr/local/bin/ha-mqtt-updates.sh` — counts pending apt upgrades (lock-safe, single-instance via `flock`, waits out apt/dpkg locks) and caches the result
+- `/usr/local/bin/ha-mqtt-discovery.sh` — publishes the retained Home Assistant MQTT Discovery config for every sensor
+- systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-discovery.service` (runs once at boot/enable)
+- `/etc/logrotate.d/mqtt-agent` — rotates `/var/log/mqtt-agent/agent.log` at ~1 MiB, keeping 3 rotations
+
+### MQTT topic layout
+
+```
+servers/<hostname>/heartbeat        # "online", non-retained, availability topic for all sensors
+servers/<hostname>/state            # JSON: {host, cpu, ram, disk_free_gb, disk_total_gb}
+servers/<hostname>/updates          # pending update count
+servers/<hostname>/ip/<iface>       # "<iface>: <ip>" per active interface
+homeassistant/sensor/<hostname>/<object>/config   # retained HA discovery configs
+```
+
+## Logs
+
+`/var/log/mqtt-agent/agent.log`, rotated by logrotate at ~1 MiB (3 rotations kept).
+The installer also self-truncates the log on install if it's already oversized.
