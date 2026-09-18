@@ -21,16 +21,16 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Reboot Required | `/var/run/reboot-required` flag file (binary sensor) | every `HEARTBEAT_INTERVAL` |
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
-| IP (`<iface>`) | one sensor per active global IPv4 interface | every `HEARTBEAT_INTERVAL` |
+| IP (`<iface>`) | one sensor per active global IPv4 interface - excludes Docker-managed interfaces (`docker*`, `br-*`), only physical NICs | every `HEARTBEAT_INTERVAL` |
 | Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service picks up and runs `systemctl reboot` | on press |
-| Agent Update (update entity) | compares the installed `SCRIPT_VERSION` against the copy at `UPDATE_URL`; HA's built-in "Install" action downloads it, replaces the persisted installer, and runs `-upgrade` | checked at boot + hourly |
+| Config Update (update entity) | compares the installed `SCRIPT_VERSION` against the copy at `UPDATE_URL`; HA's built-in "Install" action downloads it, replaces the persisted installer, and runs `-upgrade` | checked at boot + hourly |
 
 All sensors use `expire_after` tied to the heartbeat, so they flip to "unavailable"
 in Home Assistant if the agent stops publishing (host down, service crashed, etc.)
 instead of silently showing stale values. The reboot button and update entity's
 install action are stateless commands (no `expire_after` concept applies).
 
-**Security note on the reboot button and agent update:** anyone able to publish
+**Security note on the reboot button and Config Update:** anyone able to publish
 to `servers/<hostname>/reboot/set` or `servers/<hostname>/agent_update/set` on
 your MQTT broker can reboot that host, or make it download and run a script
 from `UPDATE_URL` as root — there's no confirmation or extra auth built into
@@ -125,7 +125,7 @@ servers/<hostname>/agent_update/set # command topic - any message here triggers 
 homeassistant/sensor/<hostname>/<object>/config          # retained HA discovery configs
 homeassistant/binary_sensor/<hostname>/<object>/config   # retained HA discovery configs (Reboot Required)
 homeassistant/button/<hostname>/<object>/config          # retained HA discovery config (Reboot Host)
-homeassistant/update/<hostname>/<object>/config           # retained HA discovery config (Agent Update)
+homeassistant/update/<hostname>/<object>/config           # retained HA discovery config (Config Update)
 ```
 
 ## Logs

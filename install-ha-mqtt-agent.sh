@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="16"
+SCRIPT_VERSION="17"
 
 ACTION="${1:- -install}"
 
@@ -218,6 +218,11 @@ mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t
 while IFS= read -r line; do
   iface_raw="$(echo "$line" | awk '{print $2}')"
   iface="${iface_raw%%@*}"  # strip @ifindex
+  # Skip Docker-managed interfaces (docker0, docker_gwbridge, and the
+  # per-network br-<hash> bridges Compose creates) - only physical NICs wanted.
+  case "$iface" in
+    docker*|br-*) continue ;;
+  esac
   ipaddr="$(echo "$line" | awk '{print $4}' | cut -d'/' -f1)"
   # sanitize iface name for topic (and trim trailing _)
   safe_iface="$(echo "$iface" | tr -c 'A-Za-z0-9_' '_' | sed 's/_\+$//')"
@@ -534,7 +539,7 @@ reboot_button_cfg="$(jq -nc \
 # {installed_version, latest_version} for HA to parse it without a
 # value_template.
 agent_update_cfg="$(jq -nc \
-  --arg name "Agent Update" \
+  --arg name "Config Update" \
   --arg obj "agent_update" \
   --arg def_ent "update.${DEVICE_ID}_agent_update" \
   --arg uid "${DEVICE_ID}_agent_update" \
@@ -686,6 +691,19 @@ pub_cfg_sensor "updates" "$updates_cfg"
 while IFS= read -r line; do
   iface_raw="$(echo "$line" | awk '{print $2}')"
   iface="${iface_raw%%@*}"  # strip @ifindex
+  # Skip Docker-managed interfaces (docker0, docker_gwbridge, and the
+  # per-network br-<hash> bridges Compose creates) - only physical NICs wanted.
+  # Discovery configs are retained, so actively clear any that were
+  # published for these before this filter existed, rather than just
+  # skipping and leaving a permanently-unavailable ghost entity in HA.
+  case "$iface" in
+    docker*|br-*)
+      safe_iface="$(echo "$iface" | tr -c 'A-Za-z0-9_' '_' | sed 's/_\+$//')"
+      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+        -t "homeassistant/sensor/$DEVICE_ID/ip_${safe_iface}/config" -r -m "" || true
+      continue
+      ;;
+  esac
   ipaddr="$(echo "$line" | awk '{print $4}' | cut -d'/' -f1)"
   [ -z "$ipaddr" ] && continue
   safe_iface="$(echo "$iface" | tr -c 'A-Za-z0-9_' '_' | sed 's/_\+$//')"
