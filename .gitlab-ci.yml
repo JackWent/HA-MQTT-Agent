@@ -59,7 +59,7 @@ smoke-test:
     - test -f /etc/ha-mqtt-agent/env
 
     - echo "== persisted installer copy has the version this script actually is =="
-    - grep -q '^SCRIPT_VERSION="15"' /usr/local/lib/ha-mqtt-agent/installer.sh
+    - grep -q '^SCRIPT_VERSION="16"' /usr/local/lib/ha-mqtt-agent/installer.sh
 
     - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
@@ -100,6 +100,12 @@ smoke-test:
       echo "$output" | grep -q "^Upgrade complete\."
     - test "$(stat -c '%a' /etc/ha-mqtt-agent)" = "700"
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
+
+    - echo "== -upgrade falls back to the already-installed MQTT config with no env vars supplied =="
+    - |
+      output="$(env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash install-ha-mqtt-agent.sh -upgrade)"
+      echo "$output"
+      echo "$output" | grep -q "^Upgrade complete\."
 
     - echo "== uninstall =="
     - bash install-ha-mqtt-agent.sh -uninstall

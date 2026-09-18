@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="15"
+SCRIPT_VERSION="16"
 
 ACTION="${1:- -install}"
 
@@ -19,6 +19,15 @@ ACTION="${1:- -install}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091 # .env is intentionally gitignored/optional, not present in the repo
 [ -f "$SCRIPT_DIR/.env" ] && source "$SCRIPT_DIR/.env"
+
+# Fall back to this host's already-installed config, if any, so -upgrade
+# doesn't need credentials re-supplied every time on a host that's already
+# set up - only kicks in when nothing above (env var / .env) already set
+# MQTT_HOST, so an explicit value always wins over what's stored.
+if [ -z "${MQTT_HOST:-}" ] && [ -f /etc/ha-mqtt-agent/env ]; then
+  # shellcheck disable=SC1091 # generated at install time, not present in the repo
+  source /etc/ha-mqtt-agent/env
+fi
 
 MQTT_PORT="${MQTT_PORT:-1883}"
 if [[ "$ACTION" != *uninstall* ]]; then
