@@ -81,8 +81,13 @@ smoke-test:
       state_json="$(grep -- '-t servers/.*/state ' /tmp/mqtt-publish.log | tail -1 | sed 's/.*-m //')"
       echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number")' >/dev/null
 
-    - echo "== re-running install is idempotent =="
-    - bash install-ha-mqtt-agent.sh -install
+    - echo "== -upgrade works on an existing install and is idempotent =="
+    - |
+      output="$(bash install-ha-mqtt-agent.sh -upgrade)"
+      echo "$output"
+      echo "$output" | grep -q "^Upgrade complete\."
+    - test "$(stat -c '%a' /etc/ha-mqtt-agent)" = "700"
+    - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
 
     - echo "== uninstall =="
     - bash install-ha-mqtt-agent.sh -uninstall

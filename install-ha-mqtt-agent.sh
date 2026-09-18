@@ -91,6 +91,10 @@ install_all() {
   install -d -m 0755 /usr/local/bin
   install -d -m 0755 /usr/local/lib/ha-mqtt-agent
   install -d -m 0700 /etc/ha-mqtt-agent
+  # Belt-and-braces for -upgrade on a device installed by an older version of
+  # this script (which created this directory as 0755): install -d doesn't
+  # reliably re-chmod a directory that already exists, so force it here too.
+  chmod 0700 /etc/ha-mqtt-agent
   install -d -m 0755 /run/ha-mqtt-agent
 
   # env file - contains MQTT_PASS in plaintext, so lock it down to root-only
@@ -624,7 +628,9 @@ EOF
   /usr/local/bin/ha-mqtt-metrics.sh || true
   /usr/local/bin/ha-mqtt-updates.sh || true
 
-  echo "Installation complete.
+  local action_label="Installation"
+  [[ "$ACTION" == *upgrade* ]] && action_label="Upgrade"
+  echo "$action_label complete.
 Version: $SCRIPT_VERSION
 Device: $DEVICE_NAME
 Broker: $MQTT_HOST:$MQTT_PORT
@@ -664,11 +670,18 @@ case "$ACTION" in
   -install|--install|install)
     install_all
     ;;
+  -upgrade|--upgrade|upgrade)
+    # install_all() unconditionally rewrites every file/unit it manages, so
+    # this is the exact same full re-deploy as -install - the separate name
+    # just makes intent clear when running this against an existing device
+    # on an older version, rather than a fresh host.
+    install_all
+    ;;
   -uninstall|--uninstall|uninstall)
     uninstall_all
     ;;
   *)
-    echo "Usage: $0 [-install|--install|install] | [-uninstall|--uninstall|uninstall]"
+    echo "Usage: $0 [-install|--install|install] | [-upgrade|--upgrade|upgrade] | [-uninstall|--uninstall|uninstall]"
     exit 2
     ;;
 esac

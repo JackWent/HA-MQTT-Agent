@@ -62,8 +62,12 @@ Other tunables live near the top of the script and can be edited directly if nee
 ## Usage
 
 ```bash
-# install or upgrade (idempotent — safe to re-run)
+# fresh install
 sudo bash install-ha-mqtt-agent.sh -install
+
+# upgrade an existing device to whatever version this script is
+# (same idempotent full re-deploy as -install, just a clearer name for it)
+sudo bash install-ha-mqtt-agent.sh -upgrade
 
 # remove everything the installer created
 sudo bash install-ha-mqtt-agent.sh -uninstall
