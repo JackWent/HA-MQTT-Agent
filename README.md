@@ -23,20 +23,26 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
 | IP (`<iface>`) | one sensor per active global IPv4 interface | every `HEARTBEAT_INTERVAL` |
 | Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service picks up and runs `systemctl reboot` | on press |
+| Agent Update (update entity) | compares the installed `SCRIPT_VERSION` against the copy at `UPDATE_URL`; HA's built-in "Install" action downloads it, replaces the persisted installer, and runs `-upgrade` | checked at boot + hourly |
 
 All sensors use `expire_after` tied to the heartbeat, so they flip to "unavailable"
 in Home Assistant if the agent stops publishing (host down, service crashed, etc.)
-instead of silently showing stale values. The reboot button is stateless (no
-`expire_after` concept applies to a momentary action).
+instead of silently showing stale values. The reboot button and update entity's
+install action are stateless commands (no `expire_after` concept applies).
 
-**Security note on the reboot button:** anyone able to publish to
-`servers/<hostname>/reboot/set` on your MQTT broker can reboot that host —
-there's no confirmation or extra auth built into the agent itself, since MQTT
-has no per-host access-control concept the agent could enforce. The actual
-safeguards are (1) your MQTT broker's own ACLs, and (2) enabling HA's built-in
-"confirmation" option on the button's dashboard card, which prompts before
-actually sending the press. Worth doing both, especially on hosts you'd rather
-not reboot by accident.
+**Security note on the reboot button and agent update:** anyone able to publish
+to `servers/<hostname>/reboot/set` or `servers/<hostname>/agent_update/set` on
+your MQTT broker can reboot that host, or make it download and run a script
+from `UPDATE_URL` as root — there's no confirmation or extra auth built into
+the agent itself, since MQTT has no per-host access-control concept the agent
+could enforce. The actual safeguards are (1) your MQTT broker's own ACLs, (2)
+`UPDATE_URL` being a source you trust (the update script does check the
+download's syntax and that it has a `SCRIPT_VERSION` line before applying it,
+but that's a sanity check against a corrupted download, not a defense against
+a malicious one), and (3) enabling HA's built-in "confirmation" option on
+these entities' dashboard cards, which prompts before actually sending the
+command. Worth doing all three, especially on hosts you'd rather not reboot or
+auto-update by accident.
 
 ## Requirements
 
@@ -45,7 +51,7 @@ not reboot by accident.
 - Outbound internet access for the hourly `apt-get update` used to count pending updates
 
 The installer installs its own dependencies (`jq`, `mosquitto-clients`,
-`apt-show-versions`, `logrotate`, `iproute2`, etc.) via `apt-get`.
+`apt-show-versions`, `logrotate`, `iproute2`, `curl`, etc.) via `apt-get`.
 
 ## Configuration
 
@@ -69,6 +75,7 @@ Other tunables live near the top of the script and can be edited directly if nee
 - `HEARTBEAT_INTERVAL` (default `30`s) — how often metrics/heartbeat are published
 - `SENSOR_EXPIRE` (default `120`s) — how long before a sensor is marked unavailable with no update
 - `SCRIPT_VERSION` — bump this on every functional change to the script; it's published as the "Agent Version" sensor and printed at the end of `-install`, since the version is no longer in the filename
+- `UPDATE_URL` (default `https://jackwent.co.uk/downloads/ha-agent/install-ha-mqtt-agent.sh`) — where update checks download this script from to compare `SCRIPT_VERSION`
 
 ## Usage
 
@@ -93,11 +100,14 @@ Running `-install` writes and enables the following on the target host:
 
 - `/etc/ha-mqtt-agent/env` — resolved MQTT config for the generated scripts to source
 - `/usr/local/lib/ha-mqtt-agent/common.sh` — shared logging helper (redirects stdout/stderr to the log file)
+- `/usr/local/lib/ha-mqtt-agent/installer.sh` — a persisted copy of this installer itself, so update checks/updates have a stable path to compare against and re-run, independent of wherever the script was originally downloaded to
 - `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/swap/load/disk state, reboot-required and failed-units flags, and per-interface IPs
 - `/usr/local/bin/ha-mqtt-updates.sh` — counts pending apt upgrades (lock-safe, single-instance via `flock`, waits out apt/dpkg locks) and caches the result
 - `/usr/local/bin/ha-mqtt-discovery.sh` — publishes the retained Home Assistant MQTT Discovery config for every sensor
-- `/usr/local/bin/ha-mqtt-reboot-listener.sh` — stays subscribed to the reboot command topic and runs `systemctl reboot` on receipt
-- systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-discovery.service` (runs once at boot/enable), `ha-mqtt-reboot-listener.service` (long-running, `Restart=always` - a command topic message is a single non-retained publish, so something has to be actively subscribed when it arrives or it's missed)
+- `/usr/local/bin/ha-mqtt-command-listener.sh` — stays subscribed to the reboot and agent-update command topics and acts on receipt (`systemctl reboot`, or runs `ha-mqtt-agent-update.sh`)
+- `/usr/local/bin/ha-mqtt-update-check.sh` — downloads `UPDATE_URL`, compares its `SCRIPT_VERSION` against what's installed, publishes the result (read-only, never applies anything)
+- `/usr/local/bin/ha-mqtt-agent-update.sh` — downloads `UPDATE_URL`, sanity-checks it (syntax, has a `SCRIPT_VERSION` line), replaces the persisted installer, and runs `-upgrade`
+- systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-update-check.timer` (at boot + hourly), `ha-mqtt-discovery.service` (runs once at boot/enable), `ha-mqtt-command-listener.service` (long-running, `Restart=always` - a command topic message is a single non-retained publish, so something has to be actively subscribed when it arrives or it's missed)
 - `/etc/logrotate.d/mqtt-agent` — rotates `/var/log/mqtt-agent/agent.log` at ~1 MiB, keeping 3 rotations
 
 ### MQTT topic layout
@@ -110,9 +120,12 @@ servers/<hostname>/state            # JSON: {host, cpu, ram, swap, load1, load5,
 servers/<hostname>/updates          # pending update count
 servers/<hostname>/ip/<iface>       # "<iface>: <ip>" per active interface
 servers/<hostname>/reboot/set       # command topic - any message here triggers `systemctl reboot`
+servers/<hostname>/agent_update     # retained JSON: {installed_version, latest_version}
+servers/<hostname>/agent_update/set # command topic - any message here triggers the self-update
 homeassistant/sensor/<hostname>/<object>/config          # retained HA discovery configs
 homeassistant/binary_sensor/<hostname>/<object>/config   # retained HA discovery configs (Reboot Required)
 homeassistant/button/<hostname>/<object>/config          # retained HA discovery config (Reboot Host)
+homeassistant/update/<hostname>/<object>/config           # retained HA discovery config (Agent Update)
 ```
 
 ## Logs

@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="14"
+SCRIPT_VERSION="15"
 
 ACTION="${1:- -install}"
 
@@ -30,6 +30,10 @@ fi
 # Heartbeat & expiry (seconds)
 HEARTBEAT_INTERVAL=30      # metrics timer
 SENSOR_EXPIRE=120          # sensors stale timeout (cpu/ram/disk/updates/ip)
+
+# Where update checks download this script from, to compare SCRIPT_VERSION
+# against what's installed. Override via env var/.env if ever needed.
+UPDATE_URL="${UPDATE_URL:-https://jackwent.co.uk/downloads/ha-agent/install-ha-mqtt-agent.sh}"
 
 LOG_DIR="/var/log/mqtt-agent"
 LOG_FILE="$LOG_DIR/agent.log"
@@ -85,7 +89,17 @@ EOF
 install_all() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc
+  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc curl
+
+  # Migration: this service was renamed ha-mqtt-reboot-listener ->
+  # ha-mqtt-command-listener when the agent-update feature was added (it now
+  # handles more than just reboots). Clean up the old name on any host
+  # upgrading from that version so it doesn't linger alongside the new one.
+  if [ -f /etc/systemd/system/ha-mqtt-reboot-listener.service ]; then
+    systemctl disable --now ha-mqtt-reboot-listener.service 2>/dev/null || true
+    rm -f /etc/systemd/system/ha-mqtt-reboot-listener.service
+    rm -f /usr/local/bin/ha-mqtt-reboot-listener.sh
+  fi
 
   ensure_logs
   install -d -m 0755 /usr/local/bin
@@ -110,8 +124,15 @@ MQTT_PASS="$MQTT_PASS"
 HEARTBEAT_INTERVAL="$HEARTBEAT_INTERVAL"
 SENSOR_EXPIRE="$SENSOR_EXPIRE"
 AGENT_VERSION="$SCRIPT_VERSION"
+AGENT_UPDATE_URL="$UPDATE_URL"
 # device id/name default to host at runtime
 EOF
+
+  # Persist a copy of this installer itself, so the update-check/update-apply
+  # scripts have a fixed, known path to compare against and re-run - the
+  # script as originally invoked might have been a one-off download that
+  # isn't sitting anywhere stable on disk.
+  install -m 0755 "${BASH_SOURCE[0]}" /usr/local/lib/ha-mqtt-agent/installer.sh
 
   # common lib (logging)
   write_common_lib
@@ -273,28 +294,111 @@ mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t
 EOF
   chmod +x /usr/local/bin/ha-mqtt-updates.sh
 
-  # reboot listener (long-running subscriber, not a timer - HA button presses
-  # are a single non-retained MQTT message, so something has to be actively
-  # subscribed at the moment it's sent or it's missed entirely)
-  cat > /usr/local/bin/ha-mqtt-reboot-listener.sh <<'EOF'
+  # agent self-update (downloads UPDATE_URL, sanity-checks it, replaces the
+  # persisted installer copy, and re-runs -upgrade - called by the command
+  # listener below on receipt of the update command)
+  cat > /usr/local/bin/ha-mqtt-agent-update.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
-log "starting reboot listener"
+log "starting agent self-update"
+source /etc/ha-mqtt-agent/env
+
+INSTALLER_PATH="/usr/local/lib/ha-mqtt-agent/installer.sh"
+TMP_SCRIPT="$(mktemp)"
+trap 'rm -f "$TMP_SCRIPT"' EXIT
+
+if ! curl -fsSL --max-time 30 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
+  log "ERROR: failed to download updated installer from $AGENT_UPDATE_URL"
+  exit 1
+fi
+
+if ! bash -n "$TMP_SCRIPT"; then
+  log "ERROR: downloaded installer failed syntax check, aborting update"
+  exit 1
+fi
+
+if ! grep -q '^SCRIPT_VERSION=' "$TMP_SCRIPT"; then
+  log "ERROR: downloaded installer has no SCRIPT_VERSION line, aborting update"
+  exit 1
+fi
+
+install -m 0755 "$TMP_SCRIPT" "$INSTALLER_PATH"
+log "downloaded and validated new installer, running -upgrade"
+MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" \
+  bash "$INSTALLER_PATH" -upgrade
+EOF
+  chmod +x /usr/local/bin/ha-mqtt-agent-update.sh
+
+  # command listener (long-running subscriber, not a timer - HA button/update
+  # presses are a single non-retained MQTT message, so something has to be
+  # actively subscribed at the moment one's sent or it's missed entirely).
+  # Handles both the reboot button and the agent-update button.
+  cat > /usr/local/bin/ha-mqtt-command-listener.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/lib/ha-mqtt-agent/common.sh
+log "starting command listener"
 source /etc/ha-mqtt-agent/env
 
 HOSTNAME_SHORT="$(hostname -s || hostname)"
 DEVICE_ID="$HOSTNAME_SHORT"
 REBOOT_TOPIC="servers/$DEVICE_ID/reboot/set"
+UPDATE_TOPIC="servers/$DEVICE_ID/agent_update/set"
 
-log "listening for reboot command on $REBOOT_TOPIC"
+log "listening for commands on $REBOOT_TOPIC and $UPDATE_TOPIC"
 
-mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$REBOOT_TOPIC" | while IFS= read -r _; do
-  log "reboot command received via MQTT - rebooting now"
-  systemctl reboot
+mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v -t "$REBOOT_TOPIC" -t "$UPDATE_TOPIC" | while IFS=' ' read -r topic _; do
+  case "$topic" in
+    "$REBOOT_TOPIC")
+      log "reboot command received via MQTT - rebooting now"
+      systemctl reboot
+      ;;
+    "$UPDATE_TOPIC")
+      log "update command received via MQTT"
+      /usr/local/bin/ha-mqtt-agent-update.sh || log "ERROR: agent update failed"
+      ;;
+  esac
 done
 EOF
-  chmod +x /usr/local/bin/ha-mqtt-reboot-listener.sh
+  chmod +x /usr/local/bin/ha-mqtt-command-listener.sh
+
+  # update check (downloads UPDATE_URL, compares its SCRIPT_VERSION against
+  # what's installed, publishes the result - read-only, never applies
+  # anything itself; that's ha-mqtt-agent-update.sh's job)
+  cat > /usr/local/bin/ha-mqtt-update-check.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/lib/ha-mqtt-agent/common.sh
+log "starting update check"
+source /etc/ha-mqtt-agent/env
+
+HOSTNAME_SHORT="$(hostname -s || hostname)"
+DEVICE_ID="$HOSTNAME_SHORT"
+UPDATE_STATE_TOPIC="servers/$DEVICE_ID/agent_update"
+
+installed_version="${AGENT_VERSION:-unknown}"
+latest_version="$installed_version"
+
+TMP_SCRIPT="$(mktemp)"
+trap 'rm -f "$TMP_SCRIPT"' EXIT
+
+if curl -fsSL --max-time 20 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
+  remote_version="$(grep -m1 '^SCRIPT_VERSION=' "$TMP_SCRIPT" | sed -E 's/^SCRIPT_VERSION="?([^"[:space:]]*)"?.*/\1/')"
+  if [ -n "$remote_version" ]; then
+    latest_version="$remote_version"
+    log "update check: installed=$installed_version latest=$latest_version"
+  else
+    log "WARN: could not parse SCRIPT_VERSION from downloaded script, reporting up to date"
+  fi
+else
+  log "WARN: failed to download $AGENT_UPDATE_URL for update check, reporting up to date"
+fi
+
+payload="$(jq -nc --arg installed "$installed_version" --arg latest "$latest_version" '{installed_version:$installed, latest_version:$latest}')"
+mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$UPDATE_STATE_TOPIC" -r -m "$payload" || log "ERROR publishing update check result"
+EOF
+  chmod +x /usr/local/bin/ha-mqtt-update-check.sh
 
   # discovery (uses heartbeat for availability + expire_after for ALL sensors including updates and IPs)
   cat > /usr/local/bin/ha-mqtt-discovery.sh <<'EOF'
@@ -363,6 +467,23 @@ pub_cfg_button() {
   log "published discovery for $object"
 }
 
+pub_cfg_update() {
+  local object="$1"; shift
+  local body="$1"; shift
+  local topic="homeassistant/update/$DEVICE_ID/$object/config"
+  local tries=0
+  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+    tries=$((tries+1))
+    log "WARN: publish $object discovery failed (attempt $tries)"
+    if [ $tries -ge 5 ]; then
+      log "ERROR: giving up on $object discovery after $tries attempts"
+      return 0
+    fi
+    sleep 2
+  done
+  log "published discovery for $object"
+}
+
 # Agent Online (sensor with expire_after so it becomes Unavailable)
 agent_online_cfg="$(jq -nc \
   --arg name "Agent Online" \
@@ -397,6 +518,22 @@ reboot_button_cfg="$(jq -nc \
   --arg avail "$HEARTBEAT_TOPIC" \
   --argjson dev "$device_json" \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, cmd_t:$cmd, dev_cla:"restart", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", dev:$dev}')"
+
+# Agent update - HA's native "update" entity: shows installed vs latest
+# version and gets a built-in "Install" action wired to cmd_t automatically,
+# no separate sensor+button needed. State payload must be exactly
+# {installed_version, latest_version} for HA to parse it without a
+# value_template.
+agent_update_cfg="$(jq -nc \
+  --arg name "Agent Update" \
+  --arg obj "agent_update" \
+  --arg def_ent "update.${DEVICE_ID}_agent_update" \
+  --arg uid "${DEVICE_ID}_agent_update" \
+  --arg stat "servers/$DEVICE_ID/agent_update" \
+  --arg cmd "servers/$DEVICE_ID/agent_update/set" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, cmd_t:$cmd, payload_install:"install", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", dev:$dev, entity_category:"config"}')"
 
 cpu_cfg="$(jq -nc \
   --arg name "CPU Usage" \
@@ -522,6 +659,7 @@ updates_cfg="$(jq -nc \
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
 pub_cfg_button "reboot" "$reboot_button_cfg"
+pub_cfg_update "agent_update" "$agent_update_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"
 pub_cfg_sensor "ram" "$ram_cfg"
 pub_cfg_sensor "swap" "$swap_cfg"
@@ -659,15 +797,15 @@ ReadWritePaths=/var/log/mqtt-agent
 WantedBy=multi-user.target
 EOF
 
-  cat > /etc/systemd/system/ha-mqtt-reboot-listener.service <<'EOF'
+  cat > /etc/systemd/system/ha-mqtt-command-listener.service <<'EOF'
 [Unit]
-Description=Listen for MQTT reboot command (HA)
+Description=Listen for MQTT reboot/agent-update commands (HA)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ha-mqtt-reboot-listener.sh
+ExecStart=/usr/local/bin/ha-mqtt-command-listener.sh
 EnvironmentFile=/etc/ha-mqtt-agent/env
 Restart=always
 RestartSec=10
@@ -681,6 +819,39 @@ ReadWritePaths=/var/log/mqtt-agent
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+  cat > /etc/systemd/system/ha-mqtt-update-check.service <<'EOF'
+[Unit]
+Description=Check for HA MQTT Agent installer updates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ha-mqtt-update-check.sh
+EnvironmentFile=/etc/ha-mqtt-agent/env
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/log/mqtt-agent
+EOF
+
+  cat > /etc/systemd/system/ha-mqtt-update-check.timer <<'EOF'
+[Unit]
+Description=Run HA MQTT Agent update check at boot and hourly
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=1h
+Unit=ha-mqtt-update-check.service
+
+[Install]
+WantedBy=timers.target
 EOF
 
   # logrotate
@@ -699,9 +870,15 @@ EOF
 
   systemctl daemon-reload
   systemctl enable --now ha-mqtt-discovery.service
-  systemctl enable --now ha-mqtt-reboot-listener.service
+  systemctl enable --now ha-mqtt-command-listener.service
   systemctl enable --now ha-mqtt-metrics.timer
   systemctl enable --now ha-mqtt-updates.timer
+  systemctl enable --now ha-mqtt-update-check.timer
+
+  # enable --now on an already-running Type=simple service does NOT restart
+  # it, so on -upgrade the listener would otherwise keep executing whatever
+  # code was in memory from before the upgrade rewrote its script on disk.
+  systemctl restart ha-mqtt-command-listener.service
 
   # Seed sensors immediately
   /usr/local/bin/ha-mqtt-metrics.sh || true
@@ -721,21 +898,25 @@ Logs: $LOG_FILE (rotated at ~1MiB)"
 
 uninstall_all() {
   set +e
-  systemctl disable --now ha-mqtt-metrics.timer ha-mqtt-updates.timer ha-mqtt-discovery.service ha-mqtt-reboot-listener.service 2>/dev/null
-  systemctl stop ha-mqtt-metrics.service ha-mqtt-updates.service 2>/dev/null
+  systemctl disable --now ha-mqtt-metrics.timer ha-mqtt-updates.timer ha-mqtt-update-check.timer ha-mqtt-discovery.service ha-mqtt-command-listener.service 2>/dev/null
+  systemctl stop ha-mqtt-metrics.service ha-mqtt-updates.service ha-mqtt-update-check.service 2>/dev/null
   systemctl daemon-reload
 
   rm -f /etc/systemd/system/ha-mqtt-metrics.service
   rm -f /etc/systemd/system/ha-mqtt-metrics.timer
   rm -f /etc/systemd/system/ha-mqtt-updates.service
   rm -f /etc/systemd/system/ha-mqtt-updates.timer
+  rm -f /etc/systemd/system/ha-mqtt-update-check.service
+  rm -f /etc/systemd/system/ha-mqtt-update-check.timer
   rm -f /etc/systemd/system/ha-mqtt-discovery.service
-  rm -f /etc/systemd/system/ha-mqtt-reboot-listener.service
+  rm -f /etc/systemd/system/ha-mqtt-command-listener.service
 
   rm -f /usr/local/bin/ha-mqtt-metrics.sh
   rm -f /usr/local/bin/ha-mqtt-updates.sh
   rm -f /usr/local/bin/ha-mqtt-discovery.sh
-  rm -f /usr/local/bin/ha-mqtt-reboot-listener.sh
+  rm -f /usr/local/bin/ha-mqtt-command-listener.sh
+  rm -f /usr/local/bin/ha-mqtt-update-check.sh
+  rm -f /usr/local/bin/ha-mqtt-agent-update.sh
 
   rm -rf /usr/local/lib/ha-mqtt-agent
   rm -rf /etc/ha-mqtt-agent
