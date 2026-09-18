@@ -78,7 +78,7 @@ Running `-install` writes and enables the following on the target host:
 
 - `/etc/ha-mqtt-agent/env` — resolved MQTT config for the generated scripts to source
 - `/usr/local/lib/ha-mqtt-agent/common.sh` — shared logging helper (redirects stdout/stderr to the log file)
-- `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/disk state, and per-interface IPs
+- `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/swap/load/disk state, reboot-required and failed-units flags, and per-interface IPs
 - `/usr/local/bin/ha-mqtt-updates.sh` — counts pending apt upgrades (lock-safe, single-instance via `flock`, waits out apt/dpkg locks) and caches the result
 - `/usr/local/bin/ha-mqtt-discovery.sh` — publishes the retained Home Assistant MQTT Discovery config for every sensor
 - systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-discovery.service` (runs once at boot/enable)
@@ -88,10 +88,13 @@ Running `-install` writes and enables the following on the target host:
 
 ```
 servers/<hostname>/heartbeat        # "online", non-retained, availability topic for all sensors
-servers/<hostname>/state            # JSON: {host, cpu, ram, disk_free_gb, disk_total_gb}
+servers/<hostname>/state            # JSON: {host, cpu, ram, swap, load1, load5, load15,
+                                     #        reboot_required, failed_units, disk_free_gb,
+                                     #        disk_total_gb, agent_version}
 servers/<hostname>/updates          # pending update count
 servers/<hostname>/ip/<iface>       # "<iface>: <ip>" per active interface
-homeassistant/sensor/<hostname>/<object>/config   # retained HA discovery configs
+homeassistant/sensor/<hostname>/<object>/config          # retained HA discovery configs
+homeassistant/binary_sensor/<hostname>/<object>/config   # retained HA discovery configs (Reboot Required)
 ```
 
 ## Logs
