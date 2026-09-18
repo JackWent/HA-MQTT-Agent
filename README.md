@@ -12,8 +12,13 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Sensor | Source | Update interval |
 |---|---|---|
 | Agent Online | heartbeat topic (used as the `availability` topic for every other sensor) | every `HEARTBEAT_INTERVAL` |
+| Agent Version | installed `SCRIPT_VERSION` | every `HEARTBEAT_INTERVAL` |
 | CPU Usage (%) | `/proc/stat` delta over ~0.5s | every `HEARTBEAT_INTERVAL` |
 | RAM Used (%) | `free` | every `HEARTBEAT_INTERVAL` |
+| Swap Used (%) | `free` (0 if no swap configured) | every `HEARTBEAT_INTERVAL` |
+| Load Average (1m / 5m / 15m) | `/proc/loadavg` | every `HEARTBEAT_INTERVAL` |
+| Failed Units | `systemctl --failed` count | every `HEARTBEAT_INTERVAL` |
+| Reboot Required | `/var/run/reboot-required` flag file (binary sensor) | every `HEARTBEAT_INTERVAL` |
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
 | IP (`<iface>`) | one sensor per active global IPv4 interface | every `HEARTBEAT_INTERVAL` |
@@ -52,15 +57,16 @@ Other tunables live near the top of the script and can be edited directly if nee
 
 - `HEARTBEAT_INTERVAL` (default `30`s) — how often metrics/heartbeat are published
 - `SENSOR_EXPIRE` (default `120`s) — how long before a sensor is marked unavailable with no update
+- `SCRIPT_VERSION` — bump this on every functional change to the script; it's published as the "Agent Version" sensor and printed at the end of `-install`, since the version is no longer in the filename
 
 ## Usage
 
 ```bash
 # install or upgrade (idempotent — safe to re-run)
-sudo bash install-ha-mqtt-agent-v13.sh -install
+sudo bash install-ha-mqtt-agent.sh -install
 
 # remove everything the installer created
-sudo bash install-ha-mqtt-agent-v13.sh -uninstall
+sudo bash install-ha-mqtt-agent.sh -uninstall
 ```
 
 Device ID/name are derived from the host's own hostname at runtime — no per-host

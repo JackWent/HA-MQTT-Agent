@@ -9,7 +9,7 @@ lint:
   script:
     - apt-get update -qq
     - apt-get install -y --no-install-recommends shellcheck
-    - shellcheck --severity=warning install-ha-mqtt-agent-v13.sh
+    - shellcheck --severity=warning install-ha-mqtt-agent.sh
 
 smoke-test:
   stage: test
@@ -26,7 +26,7 @@ smoke-test:
     - apt-get update -qq
     # Base image is missing a few things a real target host would already have.
     - apt-get install -y --no-install-recommends hostname procps psmisc ca-certificates
-    - bash -n install-ha-mqtt-agent-v13.sh
+    - bash -n install-ha-mqtt-agent.sh
 
     # Stub the two things that need a real broker/systemd, so the rest of the
     # script's logic (file layout, payload construction, env validation) can
@@ -39,13 +39,13 @@ smoke-test:
 
     - echo "== install must fail without MQTT config =="
     - |
-      if env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash install-ha-mqtt-agent-v13.sh -install; then
+      if env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash install-ha-mqtt-agent.sh -install; then
         echo "expected failure with missing MQTT config, but install succeeded" >&2
         exit 1
       fi
 
     - echo "== install =="
-    - bash install-ha-mqtt-agent-v13.sh -install
+    - bash install-ha-mqtt-agent.sh -install
 
     - echo "== verify installed files =="
     - test -f /usr/local/bin/ha-mqtt-metrics.sh
@@ -53,6 +53,10 @@ smoke-test:
     - test -f /usr/local/bin/ha-mqtt-discovery.sh
     - test -f /usr/local/lib/ha-mqtt-agent/common.sh
     - test -f /etc/ha-mqtt-agent/env
+
+    - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
+    - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
+
     - test -f /etc/systemd/system/ha-mqtt-metrics.service
     - test -f /etc/systemd/system/ha-mqtt-metrics.timer
     - test -f /etc/systemd/system/ha-mqtt-updates.service
@@ -78,10 +82,10 @@ smoke-test:
       echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number")' >/dev/null
 
     - echo "== re-running install is idempotent =="
-    - bash install-ha-mqtt-agent-v13.sh -install
+    - bash install-ha-mqtt-agent.sh -install
 
     - echo "== uninstall =="
-    - bash install-ha-mqtt-agent-v13.sh -uninstall
+    - bash install-ha-mqtt-agent.sh -uninstall
 
     - echo "== verify everything was removed =="
     - test ! -e /usr/local/bin/ha-mqtt-metrics.sh

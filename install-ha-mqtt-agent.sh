@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# install-ha-mqtt-agent-v11.sh
+# install-ha-mqtt-agent.sh
 # Usage:
-#   sudo bash install-ha-mqtt-agent-v11.sh -install    # install/upgrade
-#   sudo bash install-ha-mqtt-agent-v11.sh -uninstall  # remove everything
+#   sudo bash install-ha-mqtt-agent.sh -install    # install/upgrade
+#   sudo bash install-ha-mqtt-agent.sh -uninstall  # remove everything
 set -euo pipefail
+
+# Bump this on every functional change - it's printed at the end of
+# -install and is the only place the version is tracked now that it's
+# no longer in the filename.
+SCRIPT_VERSION="14"
 
 ACTION="${1:- -install}"
 
@@ -85,10 +90,14 @@ install_all() {
   ensure_logs
   install -d -m 0755 /usr/local/bin
   install -d -m 0755 /usr/local/lib/ha-mqtt-agent
-  install -d -m 0755 /etc/ha-mqtt-agent
+  install -d -m 0700 /etc/ha-mqtt-agent
   install -d -m 0755 /run/ha-mqtt-agent
 
-  # env file
+  # env file - contains MQTT_PASS in plaintext, so lock it down to root-only
+  # before writing any content (systemd's EnvironmentFile= is read by the
+  # manager process, always root, so this doesn't need to be readable by
+  # whatever User= a service later runs as).
+  install -m 0600 /dev/null /etc/ha-mqtt-agent/env
   cat > /etc/ha-mqtt-agent/env <<EOF
 MQTT_HOST="$MQTT_HOST"
 MQTT_PORT="$MQTT_PORT"
@@ -96,6 +105,7 @@ MQTT_USER="$MQTT_USER"
 MQTT_PASS="$MQTT_PASS"
 HEARTBEAT_INTERVAL="$HEARTBEAT_INTERVAL"
 SENSOR_EXPIRE="$SENSOR_EXPIRE"
+AGENT_VERSION="$SCRIPT_VERSION"
 # device id/name default to host at runtime
 EOF
 
@@ -135,6 +145,19 @@ cpu_used=$(( (1000*(totald-idled)/totald + 5)/10 ))
 # RAM used %
 mem_used_pct="$(free | awk '/Mem:/{printf("%.1f", $3*100/$2)}')"
 
+# Swap used % (0 if no swap configured, rather than dividing by zero)
+swap_used_pct="$(free | awk '/Swap:/{ if ($2>0) printf("%.1f", $3*100/$2); else print "0.0" }')"
+
+# Load average (1/5/15 min)
+read -r load1 load5 load15 _ < /proc/loadavg
+
+# Reboot required (Debian/Ubuntu apt flag file)
+if [ -f /var/run/reboot-required ]; then reboot_required=true; else reboot_required=false; fi
+
+# Failed systemd units
+failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l | tr -d '[:space:]')"
+[ -z "${failed_units:-}" ] && failed_units=0
+
 # Disk for /
 read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
 disk_free_gb=$(awk -v f="$free" 'BEGIN {printf "%.1f", f/1024/1024/1024}')
@@ -143,9 +166,16 @@ disk_total_gb=$(awk -v t="$total" 'BEGIN {printf "%.1f", t/1024/1024/1024}')
 payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --argjson cpu "$cpu_used" \
   --argjson ram "$mem_used_pct" \
+  --argjson swap "$swap_used_pct" \
+  --argjson load1 "$load1" \
+  --argjson load5 "$load5" \
+  --argjson load15 "$load15" \
+  --arg reboot_required "$reboot_required" \
+  --argjson failed_units "$failed_units" \
   --argjson disk_free_gb "$disk_free_gb" \
   --argjson disk_total_gb "$disk_total_gb" \
-  '{host:$host, cpu:$cpu, ram:$ram, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb}')"
+  --arg agent_version "${AGENT_VERSION:-unknown}" \
+  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, agent_version:$agent_version}')"
 
 mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
 
@@ -272,6 +302,23 @@ pub_cfg_sensor() {
   log "published discovery for $object"
 }
 
+pub_cfg_binary_sensor() {
+  local object="$1"; shift
+  local body="$1"; shift
+  local topic="homeassistant/binary_sensor/$DEVICE_ID/$object/config"
+  local tries=0
+  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+    tries=$((tries+1))
+    log "WARN: publish $object discovery failed (attempt $tries)"
+    if [ $tries -ge 5 ]; then
+      log "ERROR: giving up on $object discovery after $tries attempts"
+      return 0
+    fi
+    sleep 2
+  done
+  log "published discovery for $object"
+}
+
 # Agent Online (sensor with expire_after so it becomes Unavailable)
 agent_online_cfg="$(jq -nc \
   --arg name "Agent Online" \
@@ -282,6 +329,17 @@ agent_online_cfg="$(jq -nc \
   --argjson dev "$device_json" \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, avty_t:$stat, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, icon:"mdi:lan-connect", dev:$dev}')"
+
+agent_version_cfg="$(jq -nc \
+  --arg name "Agent Version" \
+  --arg obj "agent_version" \
+  --arg def_ent "sensor.${DEVICE_ID}_agent_version" \
+  --arg uid "${DEVICE_ID}_agent_version" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.agent_version }}", icon:"mdi:tag", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
 cpu_cfg="$(jq -nc \
   --arg name "CPU Usage" \
@@ -304,6 +362,72 @@ ram_cfg="$(jq -nc \
   --argjson dev "$device_json" \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.ram }}", unit_of_meas:"%", dev_cla:"power_factor", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
+
+swap_cfg="$(jq -nc \
+  --arg name "Swap Used %" \
+  --arg obj "swap" \
+  --arg def_ent "sensor.${DEVICE_ID}_swap" \
+  --arg uid "${DEVICE_ID}_swap" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.swap }}", unit_of_meas:"%", dev_cla:"power_factor", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+load1_cfg="$(jq -nc \
+  --arg name "Load Average (1m)" \
+  --arg obj "load1" \
+  --arg def_ent "sensor.${DEVICE_ID}_load1" \
+  --arg uid "${DEVICE_ID}_load1" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.load1 }}", stat_cla:"measurement", icon:"mdi:chart-line", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+load5_cfg="$(jq -nc \
+  --arg name "Load Average (5m)" \
+  --arg obj "load5" \
+  --arg def_ent "sensor.${DEVICE_ID}_load5" \
+  --arg uid "${DEVICE_ID}_load5" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.load5 }}", stat_cla:"measurement", icon:"mdi:chart-line", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+load15_cfg="$(jq -nc \
+  --arg name "Load Average (15m)" \
+  --arg obj "load15" \
+  --arg def_ent "sensor.${DEVICE_ID}_load15" \
+  --arg uid "${DEVICE_ID}_load15" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.load15 }}", stat_cla:"measurement", icon:"mdi:chart-line", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+failed_units_cfg="$(jq -nc \
+  --arg name "Failed Units" \
+  --arg obj "failed_units" \
+  --arg def_ent "sensor.${DEVICE_ID}_failed_units" \
+  --arg uid "${DEVICE_ID}_failed_units" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.failed_units }}", unit_of_meas:"units", icon:"mdi:alert-circle", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+reboot_required_cfg="$(jq -nc \
+  --arg name "Reboot Required" \
+  --arg obj "reboot_required" \
+  --arg def_ent "binary_sensor.${DEVICE_ID}_reboot_required" \
+  --arg uid "${DEVICE_ID}_reboot_required" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.reboot_required }}", pl_on:"true", pl_off:"false", dev_cla:"problem", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
 disk_free_cfg="$(jq -nc \
   --arg name "Disk Free" \
@@ -339,8 +463,15 @@ updates_cfg="$(jq -nc \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, unit_of_meas:"updates", icon:"mdi:package-up", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
+pub_cfg_sensor "agent_version" "$agent_version_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"
 pub_cfg_sensor "ram" "$ram_cfg"
+pub_cfg_sensor "swap" "$swap_cfg"
+pub_cfg_sensor "load1" "$load1_cfg"
+pub_cfg_sensor "load5" "$load5_cfg"
+pub_cfg_sensor "load15" "$load15_cfg"
+pub_cfg_sensor "failed_units" "$failed_units_cfg"
+pub_cfg_binary_sensor "reboot_required" "$reboot_required_cfg"
 pub_cfg_sensor "disk_free" "$disk_free_cfg"
 pub_cfg_sensor "disk_total" "$disk_total_cfg"
 pub_cfg_sensor "updates" "$updates_cfg"
@@ -389,6 +520,14 @@ EnvironmentFile=/etc/ha-mqtt-agent/env
 RuntimeDirectory=ha-mqtt-agent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/log/mqtt-agent
 EOF
 
   cat > /etc/systemd/system/ha-mqtt-metrics.timer <<EOF
@@ -417,6 +556,13 @@ EnvironmentFile=/etc/ha-mqtt-agent/env
 RuntimeDirectory=ha-mqtt-agent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectSystem=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
 EOF
 
   cat > /etc/systemd/system/ha-mqtt-updates.timer <<'EOF'
@@ -442,6 +588,14 @@ After=network-online.target
 Type=oneshot
 ExecStart=/usr/local/bin/ha-mqtt-discovery.sh
 EnvironmentFile=/etc/ha-mqtt-agent/env
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/log/mqtt-agent
 
 [Install]
 WantedBy=multi-user.target
@@ -471,6 +625,7 @@ EOF
   /usr/local/bin/ha-mqtt-updates.sh || true
 
   echo "Installation complete.
+Version: $SCRIPT_VERSION
 Device: $DEVICE_NAME
 Broker: $MQTT_HOST:$MQTT_PORT
 Metrics every ${HEARTBEAT_INTERVAL}s; sensors expire after ${SENSOR_EXPIRE}s if no data.
