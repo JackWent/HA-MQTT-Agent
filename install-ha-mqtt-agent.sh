@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="17"
+SCRIPT_VERSION="18"
 
 ACTION="${1:- -install}"
 
@@ -140,8 +140,14 @@ EOF
   # Persist a copy of this installer itself, so the update-check/update-apply
   # scripts have a fixed, known path to compare against and re-run - the
   # script as originally invoked might have been a one-off download that
-  # isn't sitting anywhere stable on disk.
-  install -m 0755 "${BASH_SOURCE[0]}" /usr/local/lib/ha-mqtt-agent/installer.sh
+  # isn't sitting anywhere stable on disk. When the self-update flow re-runs
+  # -upgrade FROM that persisted path, source and dest are the same file -
+  # `install` refuses that (fatal under set -e), so skip the copy then.
+  if [ "${BASH_SOURCE[0]}" -ef /usr/local/lib/ha-mqtt-agent/installer.sh ]; then
+    chmod 0755 /usr/local/lib/ha-mqtt-agent/installer.sh
+  else
+    install -m 0755 "${BASH_SOURCE[0]}" /usr/local/lib/ha-mqtt-agent/installer.sh
+  fi
 
   # common lib (logging)
   write_common_lib

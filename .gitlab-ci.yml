@@ -59,7 +59,7 @@ smoke-test:
     - test -f /etc/ha-mqtt-agent/env
 
     - echo "== persisted installer copy has the version this script actually is =="
-    - grep -q '^SCRIPT_VERSION="17"' /usr/local/lib/ha-mqtt-agent/installer.sh
+    - grep -q '^SCRIPT_VERSION="18"' /usr/local/lib/ha-mqtt-agent/installer.sh
 
     - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
@@ -104,6 +104,16 @@ smoke-test:
     - echo "== -upgrade falls back to the already-installed MQTT config with no env vars supplied =="
     - |
       output="$(env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash install-ha-mqtt-agent.sh -upgrade)"
+      echo "$output"
+      echo "$output" | grep -q "^Upgrade complete\."
+
+    # This exact invocation pattern (running from the persisted install path,
+    # not the original download location) is what ha-mqtt-agent-update.sh
+    # does for real - a self-copy bug here ("are the same file") previously
+    # made every MQTT-triggered update silently no-op.
+    - echo "== -upgrade also works when run from the persisted installer path itself =="
+    - |
+      output="$(bash /usr/local/lib/ha-mqtt-agent/installer.sh -upgrade)"
       echo "$output"
       echo "$output" | grep -q "^Upgrade complete\."
 
