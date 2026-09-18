@@ -273,6 +273,29 @@ mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t
 EOF
   chmod +x /usr/local/bin/ha-mqtt-updates.sh
 
+  # reboot listener (long-running subscriber, not a timer - HA button presses
+  # are a single non-retained MQTT message, so something has to be actively
+  # subscribed at the moment it's sent or it's missed entirely)
+  cat > /usr/local/bin/ha-mqtt-reboot-listener.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/lib/ha-mqtt-agent/common.sh
+log "starting reboot listener"
+source /etc/ha-mqtt-agent/env
+
+HOSTNAME_SHORT="$(hostname -s || hostname)"
+DEVICE_ID="$HOSTNAME_SHORT"
+REBOOT_TOPIC="servers/$DEVICE_ID/reboot/set"
+
+log "listening for reboot command on $REBOOT_TOPIC"
+
+mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$REBOOT_TOPIC" | while IFS= read -r _; do
+  log "reboot command received via MQTT - rebooting now"
+  systemctl reboot
+done
+EOF
+  chmod +x /usr/local/bin/ha-mqtt-reboot-listener.sh
+
   # discovery (uses heartbeat for availability + expire_after for ALL sensors including updates and IPs)
   cat > /usr/local/bin/ha-mqtt-discovery.sh <<'EOF'
 #!/usr/bin/env bash
@@ -323,6 +346,23 @@ pub_cfg_binary_sensor() {
   log "published discovery for $object"
 }
 
+pub_cfg_button() {
+  local object="$1"; shift
+  local body="$1"; shift
+  local topic="homeassistant/button/$DEVICE_ID/$object/config"
+  local tries=0
+  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+    tries=$((tries+1))
+    log "WARN: publish $object discovery failed (attempt $tries)"
+    if [ $tries -ge 5 ]; then
+      log "ERROR: giving up on $object discovery after $tries attempts"
+      return 0
+    fi
+    sleep 2
+  done
+  log "published discovery for $object"
+}
+
 # Agent Online (sensor with expire_after so it becomes Unavailable)
 agent_online_cfg="$(jq -nc \
   --arg name "Agent Online" \
@@ -344,6 +384,19 @@ agent_version_cfg="$(jq -nc \
   --argjson dev "$device_json" \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.agent_version }}", icon:"mdi:tag", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+# Reboot button - momentary command, no state/expire_after (buttons aren't a
+# value that goes stale, they're a one-shot action). dev_cla "restart" is
+# HA's built-in device class for exactly this.
+reboot_button_cfg="$(jq -nc \
+  --arg name "Reboot Host" \
+  --arg obj "reboot" \
+  --arg def_ent "button.${DEVICE_ID}_reboot" \
+  --arg uid "${DEVICE_ID}_reboot" \
+  --arg cmd "servers/$DEVICE_ID/reboot/set" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, cmd_t:$cmd, dev_cla:"restart", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", dev:$dev}')"
 
 cpu_cfg="$(jq -nc \
   --arg name "CPU Usage" \
@@ -468,6 +521,7 @@ updates_cfg="$(jq -nc \
 
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
+pub_cfg_button "reboot" "$reboot_button_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"
 pub_cfg_sensor "ram" "$ram_cfg"
 pub_cfg_sensor "swap" "$swap_cfg"
@@ -605,6 +659,30 @@ ReadWritePaths=/var/log/mqtt-agent
 WantedBy=multi-user.target
 EOF
 
+  cat > /etc/systemd/system/ha-mqtt-reboot-listener.service <<'EOF'
+[Unit]
+Description=Listen for MQTT reboot command (HA)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ha-mqtt-reboot-listener.sh
+EnvironmentFile=/etc/ha-mqtt-agent/env
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/log/mqtt-agent
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   # logrotate
   cat > /etc/logrotate.d/mqtt-agent <<'EOF'
 /var/log/mqtt-agent/agent.log {
@@ -621,6 +699,7 @@ EOF
 
   systemctl daemon-reload
   systemctl enable --now ha-mqtt-discovery.service
+  systemctl enable --now ha-mqtt-reboot-listener.service
   systemctl enable --now ha-mqtt-metrics.timer
   systemctl enable --now ha-mqtt-updates.timer
 
@@ -642,7 +721,7 @@ Logs: $LOG_FILE (rotated at ~1MiB)"
 
 uninstall_all() {
   set +e
-  systemctl disable --now ha-mqtt-metrics.timer ha-mqtt-updates.timer ha-mqtt-discovery.service 2>/dev/null
+  systemctl disable --now ha-mqtt-metrics.timer ha-mqtt-updates.timer ha-mqtt-discovery.service ha-mqtt-reboot-listener.service 2>/dev/null
   systemctl stop ha-mqtt-metrics.service ha-mqtt-updates.service 2>/dev/null
   systemctl daemon-reload
 
@@ -651,10 +730,12 @@ uninstall_all() {
   rm -f /etc/systemd/system/ha-mqtt-updates.service
   rm -f /etc/systemd/system/ha-mqtt-updates.timer
   rm -f /etc/systemd/system/ha-mqtt-discovery.service
+  rm -f /etc/systemd/system/ha-mqtt-reboot-listener.service
 
   rm -f /usr/local/bin/ha-mqtt-metrics.sh
   rm -f /usr/local/bin/ha-mqtt-updates.sh
   rm -f /usr/local/bin/ha-mqtt-discovery.sh
+  rm -f /usr/local/bin/ha-mqtt-reboot-listener.sh
 
   rm -rf /usr/local/lib/ha-mqtt-agent
   rm -rf /etc/ha-mqtt-agent

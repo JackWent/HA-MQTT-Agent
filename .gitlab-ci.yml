@@ -51,6 +51,7 @@ smoke-test:
     - test -f /usr/local/bin/ha-mqtt-metrics.sh
     - test -f /usr/local/bin/ha-mqtt-updates.sh
     - test -f /usr/local/bin/ha-mqtt-discovery.sh
+    - test -f /usr/local/bin/ha-mqtt-reboot-listener.sh
     - test -f /usr/local/lib/ha-mqtt-agent/common.sh
     - test -f /etc/ha-mqtt-agent/env
 
@@ -62,6 +63,7 @@ smoke-test:
     - test -f /etc/systemd/system/ha-mqtt-updates.service
     - test -f /etc/systemd/system/ha-mqtt-updates.timer
     - test -f /etc/systemd/system/ha-mqtt-discovery.service
+    - test -f /etc/systemd/system/ha-mqtt-reboot-listener.service
     - test -f /etc/logrotate.d/mqtt-agent
 
     # systemctl is stubbed, so "enable --now" during install never actually
@@ -75,6 +77,7 @@ smoke-test:
     - grep -q -- '-t servers/.*/updates ' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/sensor/.*/agent_online/config' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/sensor/.*/cpu/config' /tmp/mqtt-publish.log
+    - grep -q -- '-t homeassistant/button/.*/reboot/config' /tmp/mqtt-publish.log
 
     - echo "== state payload is valid JSON with the expected numeric fields =="
     - |
@@ -96,9 +99,11 @@ smoke-test:
     - test ! -e /usr/local/bin/ha-mqtt-metrics.sh
     - test ! -e /usr/local/bin/ha-mqtt-updates.sh
     - test ! -e /usr/local/bin/ha-mqtt-discovery.sh
+    - test ! -e /usr/local/bin/ha-mqtt-reboot-listener.sh
     - test ! -d /usr/local/lib/ha-mqtt-agent
     - test ! -d /etc/ha-mqtt-agent
     - test ! -f /etc/systemd/system/ha-mqtt-metrics.service
+    - test ! -f /etc/systemd/system/ha-mqtt-reboot-listener.service
     - test ! -f /etc/logrotate.d/mqtt-agent
   only:
     - master

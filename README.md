@@ -22,10 +22,21 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
 | IP (`<iface>`) | one sensor per active global IPv4 interface | every `HEARTBEAT_INTERVAL` |
+| Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service picks up and runs `systemctl reboot` | on press |
 
 All sensors use `expire_after` tied to the heartbeat, so they flip to "unavailable"
 in Home Assistant if the agent stops publishing (host down, service crashed, etc.)
-instead of silently showing stale values.
+instead of silently showing stale values. The reboot button is stateless (no
+`expire_after` concept applies to a momentary action).
+
+**Security note on the reboot button:** anyone able to publish to
+`servers/<hostname>/reboot/set` on your MQTT broker can reboot that host —
+there's no confirmation or extra auth built into the agent itself, since MQTT
+has no per-host access-control concept the agent could enforce. The actual
+safeguards are (1) your MQTT broker's own ACLs, and (2) enabling HA's built-in
+"confirmation" option on the button's dashboard card, which prompts before
+actually sending the press. Worth doing both, especially on hosts you'd rather
+not reboot by accident.
 
 ## Requirements
 
@@ -85,7 +96,8 @@ Running `-install` writes and enables the following on the target host:
 - `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/swap/load/disk state, reboot-required and failed-units flags, and per-interface IPs
 - `/usr/local/bin/ha-mqtt-updates.sh` — counts pending apt upgrades (lock-safe, single-instance via `flock`, waits out apt/dpkg locks) and caches the result
 - `/usr/local/bin/ha-mqtt-discovery.sh` — publishes the retained Home Assistant MQTT Discovery config for every sensor
-- systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-discovery.service` (runs once at boot/enable)
+- `/usr/local/bin/ha-mqtt-reboot-listener.sh` — stays subscribed to the reboot command topic and runs `systemctl reboot` on receipt
+- systemd units: `ha-mqtt-metrics.timer` (every `HEARTBEAT_INTERVAL`s), `ha-mqtt-updates.timer` (hourly), `ha-mqtt-discovery.service` (runs once at boot/enable), `ha-mqtt-reboot-listener.service` (long-running, `Restart=always` - a command topic message is a single non-retained publish, so something has to be actively subscribed when it arrives or it's missed)
 - `/etc/logrotate.d/mqtt-agent` — rotates `/var/log/mqtt-agent/agent.log` at ~1 MiB, keeping 3 rotations
 
 ### MQTT topic layout
@@ -97,8 +109,10 @@ servers/<hostname>/state            # JSON: {host, cpu, ram, swap, load1, load5,
                                      #        disk_total_gb, agent_version}
 servers/<hostname>/updates          # pending update count
 servers/<hostname>/ip/<iface>       # "<iface>: <ip>" per active interface
+servers/<hostname>/reboot/set       # command topic - any message here triggers `systemctl reboot`
 homeassistant/sensor/<hostname>/<object>/config          # retained HA discovery configs
 homeassistant/binary_sensor/<hostname>/<object>/config   # retained HA discovery configs (Reboot Required)
+homeassistant/button/<hostname>/<object>/config          # retained HA discovery config (Reboot Host)
 ```
 
 ## Logs
