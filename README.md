@@ -13,6 +13,7 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 |---|---|---|
 | Agent Online | heartbeat topic (used as the `availability` topic for every other sensor) | every `HEARTBEAT_INTERVAL` |
 | Agent Version | installed `SCRIPT_VERSION` | every `HEARTBEAT_INTERVAL` |
+| Hostname | `hostname -s` (capitalized) | every `HEARTBEAT_INTERVAL` |
 | CPU Usage (%) | `/proc/stat` delta over ~0.5s | every `HEARTBEAT_INTERVAL` |
 | RAM Used (%) | `free` | every `HEARTBEAT_INTERVAL` |
 | Swap Used (%) | `free` (0 if no swap configured) | every `HEARTBEAT_INTERVAL` |

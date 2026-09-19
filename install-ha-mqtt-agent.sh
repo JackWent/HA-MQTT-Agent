@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="18"
+SCRIPT_VERSION="19"
 
 ACTION="${1:- -install}"
 
@@ -526,6 +526,17 @@ agent_version_cfg="$(jq -nc \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.agent_version }}", icon:"mdi:tag", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
+hostname_cfg="$(jq -nc \
+  --arg name "Hostname" \
+  --arg obj "hostname" \
+  --arg def_ent "sensor.${DEVICE_ID}_hostname" \
+  --arg uid "${DEVICE_ID}_hostname" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.host }}", icon:"mdi:server", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
 # Reboot button - momentary command, no state/expire_after (buttons aren't a
 # value that goes stale, they're a one-shot action). dev_cla "restart" is
 # HA's built-in device class for exactly this.
@@ -678,6 +689,7 @@ updates_cfg="$(jq -nc \
 
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
+pub_cfg_sensor "hostname" "$hostname_cfg"
 pub_cfg_button "reboot" "$reboot_button_cfg"
 pub_cfg_update "agent_update" "$agent_update_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"

@@ -59,7 +59,7 @@ smoke-test:
     - test -f /etc/ha-mqtt-agent/env
 
     - echo "== persisted installer copy has the version this script actually is =="
-    - grep -q '^SCRIPT_VERSION="18"' /usr/local/lib/ha-mqtt-agent/installer.sh
+    - grep -q '^SCRIPT_VERSION="19"' /usr/local/lib/ha-mqtt-agent/installer.sh
 
     - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
