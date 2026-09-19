@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="21"
+SCRIPT_VERSION="22"
 
 ACTION="${1:- -install}"
 
@@ -201,10 +201,17 @@ failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l | tr 
 # Default gateway (route IP)
 gateway_ip="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 
-# First two configured DNS servers
-mapfile -t dns_servers < <(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
-dns1="${dns_servers[0]:-}"
-dns2="${dns_servers[1]:-}"
+# First two configured DNS servers. On systemd-resolved hosts (default on
+# Ubuntu), /etc/resolv.conf just points at the local 127.0.0.53 stub - the
+# real upstream servers live in /run/systemd/resolve/resolv.conf instead.
+if [ -f /run/systemd/resolve/resolv.conf ]; then
+  RESOLV_CONF=/run/systemd/resolve/resolv.conf
+else
+  RESOLV_CONF=/etc/resolv.conf
+fi
+mapfile -t dns_servers < <(awk '/^nameserver/{print $2}' "$RESOLV_CONF" 2>/dev/null)
+dns1="${dns_servers[0]:-0.0.0.0}"
+dns2="${dns_servers[1]:-0.0.0.0}"
 
 # Disk for /
 read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
@@ -356,15 +363,12 @@ fi
 
 install -m 0755 "$TMP_SCRIPT" "$INSTALLER_PATH"
 log "downloaded and validated new installer, running -upgrade"
+# install_all() re-runs ha-mqtt-update-check.sh itself at the end (as part
+# of "seed sensors immediately"), so the Config Update entity refreshes
+# regardless of whether -upgrade got here via this button or was run
+# manually - no separate refresh step needed here.
 MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" \
   bash "$INSTALLER_PATH" -upgrade
-
-# -upgrade just rewrote ha-mqtt-update-check.sh to match the new version -
-# re-run it immediately so the Config Update entity reflects "up to date"
-# right away, instead of sitting on the stale pre-update state until the
-# next scheduled hourly check.
-log "re-running update check to refresh Config Update state"
-/usr/local/bin/ha-mqtt-update-check.sh || log "WARN: post-update update-check failed"
 EOF
   chmod +x /usr/local/bin/ha-mqtt-agent-update.sh
 
@@ -979,9 +983,12 @@ EOF
   # code was in memory from before the upgrade rewrote its script on disk.
   systemctl restart ha-mqtt-command-listener.service
 
-  # Seed sensors immediately
+  # Seed sensors immediately - including a fresh update-check, so the Config
+  # Update entity reflects "up to date" right after ANY -upgrade (manual or
+  # via the MQTT button), not just ones triggered through the button.
   /usr/local/bin/ha-mqtt-metrics.sh || true
   /usr/local/bin/ha-mqtt-updates.sh || true
+  /usr/local/bin/ha-mqtt-update-check.sh || true
 
   local action_label="Installation"
   [[ "$ACTION" == *upgrade* ]] && action_label="Upgrade"
