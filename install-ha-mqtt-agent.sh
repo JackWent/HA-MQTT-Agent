@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="20"
+SCRIPT_VERSION="21"
 
 ACTION="${1:- -install}"
 
@@ -198,6 +198,14 @@ if [ -f /var/run/reboot-required ]; then reboot_required=true; else reboot_requi
 failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l | tr -d '[:space:]')"
 [ -z "${failed_units:-}" ] && failed_units=0
 
+# Default gateway (route IP)
+gateway_ip="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+
+# First two configured DNS servers
+mapfile -t dns_servers < <(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
+dns1="${dns_servers[0]:-}"
+dns2="${dns_servers[1]:-}"
+
 # Disk for /
 read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
 disk_free_gb=$(awk -v f="$free" 'BEGIN {printf "%.1f", f/1024/1024/1024}')
@@ -215,7 +223,10 @@ payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --argjson disk_free_gb "$disk_free_gb" \
   --argjson disk_total_gb "$disk_total_gb" \
   --arg agent_version "${AGENT_VERSION:-unknown}" \
-  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, agent_version:$agent_version}')"
+  --arg gateway "$gateway_ip" \
+  --arg dns1 "$dns1" \
+  --arg dns2 "$dns2" \
+  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2}')"
 
 mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
 
@@ -544,6 +555,39 @@ hostname_cfg="$(jq -nc \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.host }}", icon:"mdi:server", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
+gateway_cfg="$(jq -nc \
+  --arg name "Default Gateway" \
+  --arg obj "gateway" \
+  --arg def_ent "sensor.${DEVICE_ID}_gateway" \
+  --arg uid "${DEVICE_ID}_gateway" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.gateway }}", icon:"mdi:router-network", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+dns1_cfg="$(jq -nc \
+  --arg name "DNS Server 1" \
+  --arg obj "dns1" \
+  --arg def_ent "sensor.${DEVICE_ID}_dns1" \
+  --arg uid "${DEVICE_ID}_dns1" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.dns1 }}", icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
+dns2_cfg="$(jq -nc \
+  --arg name "DNS Server 2" \
+  --arg obj "dns2" \
+  --arg def_ent "sensor.${DEVICE_ID}_dns2" \
+  --arg uid "${DEVICE_ID}_dns2" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.dns2 }}", icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
 # Reboot button - momentary command, no state/expire_after (buttons aren't a
 # value that goes stale, they're a one-shot action). dev_cla "restart" is
 # HA's built-in device class for exactly this.
@@ -697,6 +741,9 @@ updates_cfg="$(jq -nc \
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
 pub_cfg_sensor "hostname" "$hostname_cfg"
+pub_cfg_sensor "gateway" "$gateway_cfg"
+pub_cfg_sensor "dns1" "$dns1_cfg"
+pub_cfg_sensor "dns2" "$dns2_cfg"
 pub_cfg_button "reboot" "$reboot_button_cfg"
 pub_cfg_update "agent_update" "$agent_update_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"
