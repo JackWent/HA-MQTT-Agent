@@ -25,7 +25,7 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
 | IP (`<iface>`) | one sensor per active global IPv4 interface - excludes Docker-managed interfaces (`docker*`, `br-*`), only physical NICs | every `HEARTBEAT_INTERVAL` |
-| Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service picks up and runs `systemctl reboot` | on press |
+| Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service publishes an offline heartbeat and an up-to-date Config Update state, then runs `systemctl reboot` | on press |
 | Config Update (update entity) | compares the installed `SCRIPT_VERSION` against the copy at `UPDATE_URL`; HA's built-in "Install" action downloads it, replaces the persisted installer, and runs `-upgrade` | checked at boot + hourly |
 
 All sensors use `expire_after` tied to the heartbeat, so they flip to "unavailable"

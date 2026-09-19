@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="23"
+SCRIPT_VERSION="25"
 
 ACTION="${1:- -install}"
 
@@ -393,7 +393,16 @@ log "listening for commands on $REBOOT_TOPIC and $UPDATE_TOPIC"
 mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v -t "$REBOOT_TOPIC" -t "$UPDATE_TOPIC" | while IFS=' ' read -r topic _; do
   case "$topic" in
     "$REBOOT_TOPIC")
-      log "reboot command received via MQTT - rebooting now"
+      log "reboot command received via MQTT - publishing final state, then rebooting"
+      # Offline heartbeat so HA shows the device unavailable immediately
+      # instead of waiting up to SENSOR_EXPIRE for it to time out on its own.
+      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+        -t "servers/$DEVICE_ID/heartbeat" -m "offline" || true
+      # Config Update: whatever's currently installed is "up to date" at the
+      # moment of a deliberate reboot, regardless of what UPDATE_URL has.
+      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+        -t "servers/$DEVICE_ID/agent_update" -r \
+        -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v}')" || true
       systemctl reboot
       ;;
     "$UPDATE_TOPIC")
@@ -993,12 +1002,20 @@ EOF
   # code was in memory from before the upgrade rewrote its script on disk.
   systemctl restart ha-mqtt-command-listener.service
 
-  # Seed sensors immediately - including a fresh update-check, so the Config
-  # Update entity reflects "up to date" right after ANY -upgrade (manual or
-  # via the MQTT button), not just ones triggered through the button.
+  # Seed sensors immediately
   /usr/local/bin/ha-mqtt-metrics.sh || true
   /usr/local/bin/ha-mqtt-updates.sh || true
-  /usr/local/bin/ha-mqtt-update-check.sh || true
+
+  # We ARE $SCRIPT_VERSION right now (that's literally what's executing),
+  # so publish Config Update as "up to date" directly instead of
+  # re-downloading UPDATE_URL again just to re-derive the same answer -
+  # this is what ha-mqtt-update-check.sh would conclude anyway, minus the
+  # redundant network round trip on every single upgrade. The hourly timer
+  # still does a real check against UPDATE_URL independently, so genuine
+  # drift (a newer version published later) still gets caught normally.
+  mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+    -t "servers/$DEVICE_ID/agent_update" -r \
+    -m "$(jq -nc --arg v "$SCRIPT_VERSION" '{installed_version:$v, latest_version:$v}')" || true
 
   local action_label="Installation"
   [[ "$ACTION" == *upgrade* ]] && action_label="Upgrade"

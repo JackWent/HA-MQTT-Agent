@@ -59,7 +59,7 @@ smoke-test:
     - test -f /etc/ha-mqtt-agent/env
 
     - echo "== persisted installer copy has the version this script actually is =="
-    - grep -q '^SCRIPT_VERSION="23"' /usr/local/lib/ha-mqtt-agent/installer.sh
+    - grep -q '^SCRIPT_VERSION="25"' /usr/local/lib/ha-mqtt-agent/installer.sh
 
     - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
@@ -92,6 +92,12 @@ smoke-test:
     - |
       state_json="$(grep -- '-t servers/.*/state ' /tmp/mqtt-publish.log | tail -1 | sed 's/.*-m //')"
       echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number")' >/dev/null
+
+    - echo "== Config Update reports up-to-date directly after install, no re-download needed =="
+    - |
+      update_json="$(grep -- '-t servers/.*/agent_update -r -m' /tmp/mqtt-publish.log | tail -1 | sed 's/.*-m //')"
+      echo "$update_json"
+      echo "$update_json" | jq -e '.installed_version == .latest_version and (.installed_version|length) > 0' >/dev/null
 
     - echo "== -upgrade works on an existing install and is idempotent =="
     - |
