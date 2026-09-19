@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="22"
+SCRIPT_VERSION="23"
 
 ACTION="${1:- -install}"
 
@@ -570,28 +570,6 @@ gateway_cfg="$(jq -nc \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.gateway }}", icon:"mdi:router-network", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
-dns1_cfg="$(jq -nc \
-  --arg name "DNS Server 1" \
-  --arg obj "dns1" \
-  --arg def_ent "sensor.${DEVICE_ID}_dns1" \
-  --arg uid "${DEVICE_ID}_dns1" \
-  --arg stat "$STATE_TOPIC" \
-  --arg avail "$HEARTBEAT_TOPIC" \
-  --argjson dev "$device_json" \
-  --argjson exp ${SENSOR_EXPIRE:-120} \
-  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.dns1 }}", icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
-
-dns2_cfg="$(jq -nc \
-  --arg name "DNS Server 2" \
-  --arg obj "dns2" \
-  --arg def_ent "sensor.${DEVICE_ID}_dns2" \
-  --arg uid "${DEVICE_ID}_dns2" \
-  --arg stat "$STATE_TOPIC" \
-  --arg avail "$HEARTBEAT_TOPIC" \
-  --argjson dev "$device_json" \
-  --argjson exp ${SENSOR_EXPIRE:-120} \
-  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.dns2 }}", icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
-
 # Reboot button - momentary command, no state/expire_after (buttons aren't a
 # value that goes stale, they're a one-shot action). dev_cla "restart" is
 # HA's built-in device class for exactly this.
@@ -746,8 +724,40 @@ pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
 pub_cfg_sensor "hostname" "$hostname_cfg"
 pub_cfg_sensor "gateway" "$gateway_cfg"
-pub_cfg_sensor "dns1" "$dns1_cfg"
-pub_cfg_sensor "dns2" "$dns2_cfg"
+
+# DNS Server 1/2 - only create a sensor for however many DNS servers are
+# actually configured (0, 1, or 2). A placeholder entity for a slot that
+# doesn't exist is more misleading than just not having it. Discovery
+# configs are retained, so a slot that previously existed and no longer
+# does gets its config actively cleared rather than left as a ghost entity.
+if [ -f /run/systemd/resolve/resolv.conf ]; then
+  DNS_RESOLV_CONF=/run/systemd/resolve/resolv.conf
+else
+  DNS_RESOLV_CONF=/etc/resolv.conf
+fi
+mapfile -t dns_servers < <(awk '/^nameserver/{print $2}' "$DNS_RESOLV_CONF" 2>/dev/null)
+
+for i in 1 2; do
+  idx=$((i - 1))
+  obj="dns${i}"
+  topic="homeassistant/sensor/$DEVICE_ID/$obj/config"
+  if [ -n "${dns_servers[$idx]:-}" ]; then
+    cfg="$(jq -nc \
+      --arg name "DNS Server $i" \
+      --arg obj "$obj" \
+      --arg def_ent "sensor.${DEVICE_ID}_${obj}" \
+      --arg uid "${DEVICE_ID}_${obj}" \
+      --arg stat "$STATE_TOPIC" \
+      --arg avail "$HEARTBEAT_TOPIC" \
+      --arg val_tpl "{{ value_json.$obj }}" \
+      --argjson dev "$device_json" \
+      --argjson exp ${SENSOR_EXPIRE:-120} \
+      '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:$val_tpl, icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+    pub_cfg_sensor "$obj" "$cfg"
+  else
+    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "" || true
+  fi
+done
 pub_cfg_button "reboot" "$reboot_button_cfg"
 pub_cfg_update "agent_update" "$agent_update_cfg"
 pub_cfg_sensor "cpu" "$cpu_cfg"
