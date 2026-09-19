@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="19"
+SCRIPT_VERSION="20"
 
 ACTION="${1:- -install}"
 
@@ -347,6 +347,13 @@ install -m 0755 "$TMP_SCRIPT" "$INSTALLER_PATH"
 log "downloaded and validated new installer, running -upgrade"
 MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" \
   bash "$INSTALLER_PATH" -upgrade
+
+# -upgrade just rewrote ha-mqtt-update-check.sh to match the new version -
+# re-run it immediately so the Config Update entity reflects "up to date"
+# right away, instead of sitting on the stale pre-update state until the
+# next scheduled hourly check.
+log "re-running update check to refresh Config Update state"
+/usr/local/bin/ha-mqtt-update-check.sh || log "WARN: post-update update-check failed"
 EOF
   chmod +x /usr/local/bin/ha-mqtt-agent-update.sh
 
