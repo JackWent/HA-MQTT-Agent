@@ -79,20 +79,20 @@ Other tunables live near the top of the script and can be edited directly if nee
 - `HEARTBEAT_INTERVAL` (default `30`s) — how often metrics/heartbeat are published
 - `SENSOR_EXPIRE` (default `120`s) — how long before a sensor is marked unavailable with no update
 - `SCRIPT_VERSION` — bump this on every functional change to the script; it's published as the "Agent Version" sensor and printed at the end of `-install`, since the version is no longer in the filename
-- `UPDATE_URL` (default `https://jackwent.co.uk/downloads/ha-agent/install-ha-mqtt-agent.sh`) — where update checks download this script from to compare `SCRIPT_VERSION`
+- `UPDATE_URL` (default `https://jackwent.co.uk/downloads/ha-agent/ha-mqtt-agent.sh`) — where update checks download this script from to compare `SCRIPT_VERSION`
 
 ## Usage
 
 ```bash
 # fresh install
-sudo bash install-ha-mqtt-agent.sh -install
+sudo bash ha-mqtt-agent.sh -install
 
 # upgrade an existing device to whatever version this script is
 # (same idempotent full re-deploy as -install, just a clearer name for it)
-sudo bash install-ha-mqtt-agent.sh -upgrade
+sudo bash ha-mqtt-agent.sh -upgrade
 
 # remove everything the installer created
-sudo bash install-ha-mqtt-agent.sh -uninstall
+sudo bash ha-mqtt-agent.sh -uninstall
 ```
 
 Device ID/name are derived from the host's own hostname at runtime — no per-host

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# install-ha-mqtt-agent.sh
+# ha-mqtt-agent.sh
 # Usage:
-#   sudo bash install-ha-mqtt-agent.sh -install    # install/upgrade
-#   sudo bash install-ha-mqtt-agent.sh -uninstall  # remove everything
+#   sudo bash ha-mqtt-agent.sh -install    # install/upgrade
+#   sudo bash ha-mqtt-agent.sh -uninstall  # remove everything
 set -euo pipefail
 
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="28"
+SCRIPT_VERSION="29"
 
 ACTION="${1:- -install}"
 
@@ -42,7 +42,7 @@ SENSOR_EXPIRE=120          # sensors stale timeout (cpu/ram/disk/updates/ip)
 
 # Where update checks download this script from, to compare SCRIPT_VERSION
 # against what's installed. Override via env var/.env if ever needed.
-UPDATE_URL="${UPDATE_URL:-https://jackwent.co.uk/downloads/ha-agent/install-ha-mqtt-agent.sh}"
+UPDATE_URL="${UPDATE_URL:-https://jackwent.co.uk/downloads/ha-agent/ha-mqtt-agent.sh}"
 
 LOG_DIR="/var/log/mqtt-agent"
 LOG_FILE="$LOG_DIR/agent.log"
