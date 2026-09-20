@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="26"
+SCRIPT_VERSION="27"
 
 ACTION="${1:- -install}"
 
@@ -342,27 +342,48 @@ source /usr/local/lib/ha-mqtt-agent/common.sh
 log "starting agent self-update"
 source /etc/ha-mqtt-agent/env
 
+HOSTNAME_SHORT="$(hostname -s || hostname)"
+DEVICE_ID="$HOSTNAME_SHORT"
+UPDATE_STATE_TOPIC="servers/$DEVICE_ID/agent_update"
+
+# Publishes install progress for HA's update entity progress bar.
+# $1 = update_percentage (0-100, or the literal string "null" to clear it)
+# $2 = in_progress (true/false)
+# $3 = latest_version to report
+publish_progress() {
+  mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+    -t "$UPDATE_STATE_TOPIC" -r \
+    -m "$(jq -nc --arg inst "${AGENT_VERSION:-unknown}" --arg lat "$3" --argjson pct "$1" --argjson prog "$2" \
+      '{installed_version:$inst, latest_version:$lat, in_progress:$prog, update_percentage:$pct}')" || true
+}
+
 INSTALLER_PATH="/usr/local/lib/ha-mqtt-agent/installer.sh"
 TMP_SCRIPT="$(mktemp)"
 trap 'rm -f "$TMP_SCRIPT"' EXIT
 
 if ! curl -fsSL --max-time 30 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
   log "ERROR: failed to download updated installer from $AGENT_UPDATE_URL"
+  publish_progress null false "${AGENT_VERSION:-unknown}"
   exit 1
 fi
 
 if ! bash -n "$TMP_SCRIPT"; then
   log "ERROR: downloaded installer failed syntax check, aborting update"
+  publish_progress null false "${AGENT_VERSION:-unknown}"
   exit 1
 fi
 
-if ! grep -q '^SCRIPT_VERSION=' "$TMP_SCRIPT"; then
+remote_version="$(grep -m1 '^SCRIPT_VERSION=' "$TMP_SCRIPT" | sed -E 's/^SCRIPT_VERSION="?([^"[:space:]]*)"?.*/\1/')"
+if [ -z "$remote_version" ]; then
   log "ERROR: downloaded installer has no SCRIPT_VERSION line, aborting update"
+  publish_progress null false "${AGENT_VERSION:-unknown}"
   exit 1
 fi
+publish_progress 35 true "$remote_version"
 
 install -m 0755 "$TMP_SCRIPT" "$INSTALLER_PATH"
 log "downloaded and validated new installer, running -upgrade"
+publish_progress 60 true "$remote_version"
 # install_all() publishes the Config Update "up to date" state itself at
 # the end (before restarting the command listener - see its comment), so
 # the entity refreshes regardless of whether -upgrade got here via this
@@ -402,12 +423,25 @@ mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v
       # moment of a deliberate reboot, regardless of what UPDATE_URL has.
       mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
         -t "servers/$DEVICE_ID/agent_update" -r \
-        -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v}')" || true
+        -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
       systemctl reboot
       ;;
     "$UPDATE_TOPIC")
       log "update command received via MQTT"
-      /usr/local/bin/ha-mqtt-agent-update.sh || log "ERROR: agent update failed"
+      # Kick the progress bar off immediately - ha-mqtt-agent-update.sh takes
+      # it from here once it knows the real latest_version.
+      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+        -t "servers/$DEVICE_ID/agent_update" -r \
+        -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:true, update_percentage:5}')" || true
+      if ! /usr/local/bin/ha-mqtt-agent-update.sh; then
+        log "ERROR: agent update failed"
+        # Safety net in case ha-mqtt-agent-update.sh crashed before it could
+        # reset its own progress state (e.g. killed mid-run) - don't leave
+        # the update entity stuck showing "installing" forever.
+        mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+          -t "servers/$DEVICE_ID/agent_update" -r \
+          -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
+      fi
       ;;
   esac
 done
@@ -594,9 +628,11 @@ reboot_button_cfg="$(jq -nc \
 
 # Agent update - HA's native "update" entity: shows installed vs latest
 # version and gets a built-in "Install" action wired to cmd_t automatically,
-# no separate sensor+button needed. State payload must be exactly
-# {installed_version, latest_version} for HA to parse it without a
-# value_template.
+# no separate sensor+button needed. State payload needs installed_version
+# and latest_version for HA to parse it without a value_template; the
+# in_progress/update_percentage fields we also publish (see
+# ha-mqtt-agent-update.sh) drive its progress bar - no extra discovery
+# config needed for those, HA picks them up from the state payload alone.
 agent_update_cfg="$(jq -nc \
   --arg name "Config Update" \
   --arg obj "agent_update" \
@@ -1018,7 +1054,7 @@ EOF
   # "update available" until the next hourly ha-mqtt-update-check.timer run.
   mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
     -t "servers/$DEVICE_ID/agent_update" -r \
-    -m "$(jq -nc --arg v "$SCRIPT_VERSION" '{installed_version:$v, latest_version:$v}')" || true
+    -m "$(jq -nc --arg v "$SCRIPT_VERSION" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
 
   # enable --now on an already-running Type=simple service does NOT restart
   # it, so on -upgrade the listener would otherwise keep executing whatever
