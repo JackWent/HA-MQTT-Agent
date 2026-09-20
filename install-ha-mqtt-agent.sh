@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="25"
+SCRIPT_VERSION="26"
 
 ACTION="${1:- -install}"
 
@@ -363,10 +363,10 @@ fi
 
 install -m 0755 "$TMP_SCRIPT" "$INSTALLER_PATH"
 log "downloaded and validated new installer, running -upgrade"
-# install_all() re-runs ha-mqtt-update-check.sh itself at the end (as part
-# of "seed sensors immediately"), so the Config Update entity refreshes
-# regardless of whether -upgrade got here via this button or was run
-# manually - no separate refresh step needed here.
+# install_all() publishes the Config Update "up to date" state itself at
+# the end (before restarting the command listener - see its comment), so
+# the entity refreshes regardless of whether -upgrade got here via this
+# button or was run manually - no separate refresh step needed here.
 MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" \
   bash "$INSTALLER_PATH" -upgrade
 EOF
@@ -997,11 +997,6 @@ EOF
   systemctl enable --now ha-mqtt-updates.timer
   systemctl enable --now ha-mqtt-update-check.timer
 
-  # enable --now on an already-running Type=simple service does NOT restart
-  # it, so on -upgrade the listener would otherwise keep executing whatever
-  # code was in memory from before the upgrade rewrote its script on disk.
-  systemctl restart ha-mqtt-command-listener.service
-
   # Seed sensors immediately
   /usr/local/bin/ha-mqtt-metrics.sh || true
   /usr/local/bin/ha-mqtt-updates.sh || true
@@ -1013,9 +1008,25 @@ EOF
   # redundant network round trip on every single upgrade. The hourly timer
   # still does a real check against UPDATE_URL independently, so genuine
   # drift (a newer version published later) still gets caught normally.
+  #
+  # This MUST run before the command-listener restart below: when -upgrade
+  # is reached via the MQTT update button, this whole function is executing
+  # as a descendant process of ha-mqtt-command-listener.service itself, and
+  # that service has no KillMode override (default control-group) - so
+  # restarting it first would SIGTERM this entire process tree mid-upgrade,
+  # before ever publishing the "up to date" state. Device would then sit on
+  # "update available" until the next hourly ha-mqtt-update-check.timer run.
   mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
     -t "servers/$DEVICE_ID/agent_update" -r \
     -m "$(jq -nc --arg v "$SCRIPT_VERSION" '{installed_version:$v, latest_version:$v}')" || true
+
+  # enable --now on an already-running Type=simple service does NOT restart
+  # it, so on -upgrade the listener would otherwise keep executing whatever
+  # code was in memory from before the upgrade rewrote its script on disk.
+  # Must be last: an MQTT-triggered update runs this whole function as a
+  # child of this very service (see comment above), so restarting it any
+  # earlier kills the upgrade in progress.
+  systemctl restart ha-mqtt-command-listener.service
 
   local action_label="Installation"
   [[ "$ACTION" == *upgrade* ]] && action_label="Upgrade"
