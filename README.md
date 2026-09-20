@@ -23,6 +23,7 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Failed Units | `systemctl --failed` count | every `HEARTBEAT_INTERVAL` |
 | Reboot Required | `/var/run/reboot-required` flag file (binary sensor) | every `HEARTBEAT_INTERVAL` |
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
+| Disk Free (%) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
 | IP (`<iface>`) | one sensor per active global IPv4 interface - excludes Docker-managed interfaces (`docker*`, `br-*`), only physical NICs | every `HEARTBEAT_INTERVAL` |
 | Reboot Host (button) | pressing it publishes to `servers/<hostname>/reboot/set`, which a dedicated listener service publishes an offline heartbeat and an up-to-date Config Update state, then runs `systemctl reboot` | on press |

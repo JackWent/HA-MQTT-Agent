@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="27"
+SCRIPT_VERSION="28"
 
 ACTION="${1:- -install}"
 
@@ -217,6 +217,7 @@ dns2="${dns_servers[1]:-0.0.0.0}"
 read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
 disk_free_gb=$(awk -v f="$free" 'BEGIN {printf "%.1f", f/1024/1024/1024}')
 disk_total_gb=$(awk -v t="$total" 'BEGIN {printf "%.1f", t/1024/1024/1024}')
+disk_free_pct=$(awk -v f="$free" -v t="$total" 'BEGIN {printf "%.1f", (t>0) ? f*100/t : 0}')
 
 payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --argjson cpu "$cpu_used" \
@@ -229,11 +230,12 @@ payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --argjson failed_units "$failed_units" \
   --argjson disk_free_gb "$disk_free_gb" \
   --argjson disk_total_gb "$disk_total_gb" \
+  --argjson disk_free_pct "$disk_free_pct" \
   --arg agent_version "${AGENT_VERSION:-unknown}" \
   --arg gateway "$gateway_ip" \
   --arg dns1 "$dns1" \
   --arg dns2 "$dns2" \
-  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2}')"
+  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, disk_free_pct:$disk_free_pct, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2}')"
 
 mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
 
@@ -754,6 +756,17 @@ disk_total_cfg="$(jq -nc \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.disk_total_gb }}", unit_of_meas:"GB", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
 
+disk_free_pct_cfg="$(jq -nc \
+  --arg name "Disk Free %" \
+  --arg obj "disk_free_pct" \
+  --arg def_ent "sensor.${DEVICE_ID}_disk_free_pct" \
+  --arg uid "${DEVICE_ID}_disk_free_pct" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.disk_free_pct }}", unit_of_meas:"%", dev_cla:"power_factor", stat_cla:"measurement", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev}')"
+
 updates_cfg="$(jq -nc \
   --arg name "Updates Pending" \
   --arg obj "updates" \
@@ -815,6 +828,7 @@ pub_cfg_sensor "failed_units" "$failed_units_cfg"
 pub_cfg_binary_sensor "reboot_required" "$reboot_required_cfg"
 pub_cfg_sensor "disk_free" "$disk_free_cfg"
 pub_cfg_sensor "disk_total" "$disk_total_cfg"
+pub_cfg_sensor "disk_free_pct" "$disk_free_pct_cfg"
 pub_cfg_sensor "updates" "$updates_cfg"
 
 # Per-interface IP sensors (discovered dynamically)
