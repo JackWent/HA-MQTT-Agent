@@ -14,6 +14,7 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Agent Online | heartbeat topic (used as the `availability` topic for every other sensor) | every `HEARTBEAT_INTERVAL` |
 | Agent Version | installed `SCRIPT_VERSION` | every `HEARTBEAT_INTERVAL` |
 | Hostname | `hostname -s` (capitalized) | every `HEARTBEAT_INTERVAL` |
+| OS Version | `PRETTY_NAME` from `/etc/os-release` (e.g. `Ubuntu 24.04.1 LTS`), falling back to `uname -sr` | every `HEARTBEAT_INTERVAL` |
 | Default Gateway | `ip route show default` | every `HEARTBEAT_INTERVAL` |
 | DNS Server 1 / DNS Server 2 | first two `nameserver` lines in `/etc/resolv.conf` | every `HEARTBEAT_INTERVAL` |
 | CPU Usage (%) | `/proc/stat` delta over ~0.5s | every `HEARTBEAT_INTERVAL` |
@@ -120,7 +121,8 @@ Running `-install` writes and enables the following on the target host:
 servers/<hostname>/heartbeat        # "online", non-retained, availability topic for all sensors
 servers/<hostname>/state            # JSON: {host, cpu, ram, swap, load1, load5, load15,
                                      #        reboot_required, failed_units, disk_free_gb,
-                                     #        disk_total_gb, agent_version, gateway, dns1, dns2}
+                                     #        disk_total_gb, disk_free_pct, agent_version, gateway,
+                                     #        dns1, dns2, os_version}
 servers/<hostname>/updates          # pending update count
 servers/<hostname>/ip/<iface>       # "<iface>: <ip>" per active interface
 servers/<hostname>/reboot/set       # command topic - any message here triggers `systemctl reboot`

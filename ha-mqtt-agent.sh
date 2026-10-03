@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="29"
+SCRIPT_VERSION="30"
 
 ACTION="${1:- -install}"
 
@@ -213,6 +213,14 @@ mapfile -t dns_servers < <(awk '/^nameserver/{print $2}' "$RESOLV_CONF" 2>/dev/n
 dns1="${dns_servers[0]:-0.0.0.0}"
 dns2="${dns_servers[1]:-0.0.0.0}"
 
+# OS version, e.g. "Ubuntu 24.04.1 LTS" - PRETTY_NAME from os-release, falling back
+# to kernel name + release on anything without one.
+os_version=""
+if [ -r /etc/os-release ]; then
+  os_version="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
+fi
+[ -z "$os_version" ] && os_version="$(uname -sr)"
+
 # Disk for /
 read -r total used free <<<"$(df -B1 / | awk 'NR==2{print $2, $3, $4}')"
 disk_free_gb=$(awk -v f="$free" 'BEGIN {printf "%.1f", f/1024/1024/1024}')
@@ -235,7 +243,8 @@ payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --arg gateway "$gateway_ip" \
   --arg dns1 "$dns1" \
   --arg dns2 "$dns2" \
-  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, disk_free_pct:$disk_free_pct, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2}')"
+  --arg os_version "$os_version" \
+  '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, disk_free_pct:$disk_free_pct, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2, os_version:$os_version}')"
 
 mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
 
@@ -604,6 +613,17 @@ hostname_cfg="$(jq -nc \
   --argjson exp ${SENSOR_EXPIRE:-120} \
   '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.host }}", icon:"mdi:server", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
 
+os_version_cfg="$(jq -nc \
+  --arg name "OS Version" \
+  --arg obj "os_version" \
+  --arg def_ent "sensor.${DEVICE_ID}_os_version" \
+  --arg uid "${DEVICE_ID}_os_version" \
+  --arg stat "$STATE_TOPIC" \
+  --arg avail "$HEARTBEAT_TOPIC" \
+  --argjson dev "$device_json" \
+  --argjson exp ${SENSOR_EXPIRE:-120} \
+  '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:"{{ value_json.os_version }}", icon:"mdi:linux", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
+
 gateway_cfg="$(jq -nc \
   --arg name "Default Gateway" \
   --arg obj "gateway" \
@@ -781,6 +801,7 @@ updates_cfg="$(jq -nc \
 pub_cfg_sensor "agent_online" "$agent_online_cfg"
 pub_cfg_sensor "agent_version" "$agent_version_cfg"
 pub_cfg_sensor "hostname" "$hostname_cfg"
+pub_cfg_sensor "os_version" "$os_version_cfg"
 pub_cfg_sensor "gateway" "$gateway_cfg"
 
 # DNS Server 1/2 - only create a sensor for however many DNS servers are

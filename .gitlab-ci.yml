@@ -87,13 +87,14 @@ smoke-test:
     - grep -q -- '-t servers/.*/updates ' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/sensor/.*/agent_online/config' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/sensor/.*/cpu/config' /tmp/mqtt-publish.log
+    - grep -q -- '-t homeassistant/sensor/.*/os_version/config' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/button/.*/reboot/config' /tmp/mqtt-publish.log
     - grep -q -- '-t homeassistant/update/.*/agent_update/config' /tmp/mqtt-publish.log
 
     - echo "== state payload is valid JSON with the expected numeric fields =="
     - |
       state_json="$(grep -- '-t servers/.*/state ' /tmp/mqtt-publish.log | tail -1 | sed 's/.*-m //')"
-      echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number")' >/dev/null
+      echo "$state_json" | jq -e '(.cpu|type=="number") and (.ram|type=="number") and (.disk_free_gb|type=="number") and (.disk_total_gb|type=="number") and (.os_version|type=="string" and length > 0)' >/dev/null
 
     - echo "== Config Update reports up-to-date directly after install, no re-download needed =="
     - |
