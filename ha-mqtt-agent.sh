@@ -8,9 +8,9 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="31"
+SCRIPT_VERSION="32"
 
-ACTION="${1:- -install}"
+ACTION="${1:--install}"
 
 # ---- Config ----
 # Set these via environment variables, or drop a .env file next to this
@@ -406,6 +406,12 @@ if [ -z "$remote_version" ]; then
   log "ERROR: downloaded installer has no SCRIPT_VERSION line, aborting update"
   publish_progress null false "${AGENT_VERSION:-unknown}"
   exit 1
+fi
+# Never go backwards: whatever is at the update URL has to be newer than what is installed.
+if [[ "$remote_version" =~ ^[0-9]+$ && "${AGENT_VERSION:-}" =~ ^[0-9]+$ ]] && [ "$remote_version" -le "$AGENT_VERSION" ]; then
+  log "update: download is version $remote_version and $AGENT_VERSION is installed, nothing newer, aborting"
+  publish_progress null false "${AGENT_VERSION:-unknown}"
+  exit 0
 fi
 publish_progress 35 true "$remote_version"
 
