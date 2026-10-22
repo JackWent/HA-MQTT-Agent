@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="30"
+SCRIPT_VERSION="31"
 
 ACTION="${1:- -install}"
 
@@ -91,6 +91,11 @@ log() {
   # usage: log "message"
   echo "$(date -Is) [$0] $*"
 }
+
+# mosquitto_pub/sub read their broker, user and password from root-only option files
+# here (written by -install), so the password never appears on a command line where
+# any local user could read it with ps.
+export XDG_CONFIG_HOME=/etc/ha-mqtt-agent/mosquitto
 EOF
   chmod +x /usr/local/lib/ha-mqtt-agent/common.sh
 }
@@ -136,6 +141,18 @@ AGENT_VERSION="$SCRIPT_VERSION"
 AGENT_UPDATE_URL="$UPDATE_URL"
 # device id/name default to host at runtime
 EOF
+
+  # mosquitto_pub/sub option files. The clients read these from $XDG_CONFIG_HOME, so the
+  # credentials stay off the command line (version 30 and earlier passed -P, which showed
+  # the password to anyone running ps). One option per line; the rest of the line is its value.
+  install -d -m 0700 /etc/ha-mqtt-agent/mosquitto
+  local client
+  for client in mosquitto_pub mosquitto_sub; do
+    install -m 0600 /dev/null "/etc/ha-mqtt-agent/mosquitto/$client"
+    printf -- '-h %s\n-p %s\n-u %s\n-P %s\n' "$MQTT_HOST" "$MQTT_PORT" "$MQTT_USER" "$MQTT_PASS" \
+      > "/etc/ha-mqtt-agent/mosquitto/$client"
+  done
+  export XDG_CONFIG_HOME=/etc/ha-mqtt-agent/mosquitto
 
   # Persist a copy of this installer itself, so the update-check/update-apply
   # scripts have a fixed, known path to compare against and re-run - the
@@ -246,7 +263,7 @@ payload="$(jq -nc --arg host "$DEVICE_NAME" \
   --arg os_version "$os_version" \
   '{host:$host, cpu:$cpu, ram:$ram, swap:$swap, load1:$load1, load5:$load5, load15:$load15, reboot_required:$reboot_required, failed_units:$failed_units, disk_free_gb:$disk_free_gb, disk_total_gb:$disk_total_gb, disk_free_pct:$disk_free_pct, agent_version:$agent_version, gateway:$gateway, dns1:$dns1, dns2:$dns2, os_version:$os_version}')"
 
-mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
+mosquitto_pub -t "$STATE_TOPIC" -m "$payload" || log "ERROR publishing metrics"
 
 # Per-interface IPv4s (first address per interface), only 'up' and global
 # Publish to servers/<host>/ip/<iface>
@@ -261,7 +278,7 @@ while IFS= read -r line; do
   ipaddr="$(echo "$line" | awk '{print $4}' | cut -d'/' -f1)"
   # sanitize iface name for topic (and trim trailing _)
   safe_iface="$(echo "$iface" | tr -c 'A-Za-z0-9_' '_' | sed 's/_\+$//')"
-  [ -n "$ipaddr" ] && mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+  [ -n "$ipaddr" ] && mosquitto_pub \
     -t "$BASE/ip/$safe_iface" -m "$iface: $ipaddr" || true
 done < <(ip -o -4 addr show scope global up | awk '!seen[$2]++')
 
@@ -269,13 +286,13 @@ done < <(ip -o -4 addr show scope global up | awk '!seen[$2]++')
 if [ -f "$CACHE" ]; then
   cached="$(tr -d '[:space:]' < "$CACHE")"
   if [[ "$cached" =~ ^[0-9]+$ ]]; then
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$UPDATES_TOPIC" -m "$cached" || log "ERROR publishing cached updates"
+    mosquitto_pub -t "$UPDATES_TOPIC" -m "$cached" || log "ERROR publishing cached updates"
     log "published cached updates: $cached"
   fi
 fi
 
 # Heartbeat (non-retained)
-mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$HEARTBEAT_TOPIC" -m "online" || true
+mosquitto_pub -t "$HEARTBEAT_TOPIC" -m "online" || true
 EOF
   chmod +x /usr/local/bin/ha-mqtt-metrics.sh
 
@@ -339,7 +356,7 @@ count="$(apt-show-versions -u -b | sed '/^No .* upgrades/d' | wc -l | tr -d '[:s
 echo "$count" > "$CACHE"
 log "updates pending: $count (cached at $CACHE)"
 
-mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$UPDATES_TOPIC" -m "$count" || log "ERROR publishing updates"
+mosquitto_pub -t "$UPDATES_TOPIC" -m "$count" || log "ERROR publishing updates"
 EOF
   chmod +x /usr/local/bin/ha-mqtt-updates.sh
 
@@ -362,7 +379,7 @@ UPDATE_STATE_TOPIC="servers/$DEVICE_ID/agent_update"
 # $2 = in_progress (true/false)
 # $3 = latest_version to report
 publish_progress() {
-  mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+  mosquitto_pub \
     -t "$UPDATE_STATE_TOPIC" -r \
     -m "$(jq -nc --arg inst "${AGENT_VERSION:-unknown}" --arg lat "$3" --argjson pct "$1" --argjson prog "$2" \
       '{installed_version:$inst, latest_version:$lat, in_progress:$prog, update_percentage:$pct}')" || true
@@ -422,17 +439,17 @@ UPDATE_TOPIC="servers/$DEVICE_ID/agent_update/set"
 
 log "listening for commands on $REBOOT_TOPIC and $UPDATE_TOPIC"
 
-mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v -t "$REBOOT_TOPIC" -t "$UPDATE_TOPIC" | while IFS=' ' read -r topic _; do
+mosquitto_sub -v -t "$REBOOT_TOPIC" -t "$UPDATE_TOPIC" | while IFS=' ' read -r topic _; do
   case "$topic" in
     "$REBOOT_TOPIC")
       log "reboot command received via MQTT - publishing final state, then rebooting"
       # Offline heartbeat so HA shows the device unavailable immediately
       # instead of waiting up to SENSOR_EXPIRE for it to time out on its own.
-      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+      mosquitto_pub \
         -t "servers/$DEVICE_ID/heartbeat" -m "offline" || true
       # Config Update: whatever's currently installed is "up to date" at the
       # moment of a deliberate reboot, regardless of what UPDATE_URL has.
-      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+      mosquitto_pub \
         -t "servers/$DEVICE_ID/agent_update" -r \
         -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
       systemctl reboot
@@ -441,7 +458,7 @@ mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v
       log "update command received via MQTT"
       # Kick the progress bar off immediately - ha-mqtt-agent-update.sh takes
       # it from here once it knows the real latest_version.
-      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+      mosquitto_pub \
         -t "servers/$DEVICE_ID/agent_update" -r \
         -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:true, update_percentage:5}')" || true
       if ! /usr/local/bin/ha-mqtt-agent-update.sh; then
@@ -449,7 +466,7 @@ mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -v
         # Safety net in case ha-mqtt-agent-update.sh crashed before it could
         # reset its own progress state (e.g. killed mid-run) - don't leave
         # the update entity stuck showing "installing" forever.
-        mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+        mosquitto_pub \
           -t "servers/$DEVICE_ID/agent_update" -r \
           -m "$(jq -nc --arg v "${AGENT_VERSION:-unknown}" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
       fi
@@ -492,7 +509,7 @@ else
 fi
 
 payload="$(jq -nc --arg installed "$installed_version" --arg latest "$latest_version" '{installed_version:$installed, latest_version:$latest}')"
-mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$UPDATE_STATE_TOPIC" -r -m "$payload" || log "ERROR publishing update check result"
+mosquitto_pub -t "$UPDATE_STATE_TOPIC" -r -m "$payload" || log "ERROR publishing update check result"
 EOF
   chmod +x /usr/local/bin/ha-mqtt-update-check.sh
 
@@ -517,7 +534,7 @@ pub_cfg_sensor() {
   local body="$1"; shift
   local topic="homeassistant/sensor/$DEVICE_ID/$object/config"
   local tries=0
-  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+  until mosquitto_pub -t "$topic" -r -m "$body"; do
     tries=$((tries+1))
     log "WARN: publish $object discovery failed (attempt $tries)"
     if [ $tries -ge 5 ]; then
@@ -534,7 +551,7 @@ pub_cfg_binary_sensor() {
   local body="$1"; shift
   local topic="homeassistant/binary_sensor/$DEVICE_ID/$object/config"
   local tries=0
-  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+  until mosquitto_pub -t "$topic" -r -m "$body"; do
     tries=$((tries+1))
     log "WARN: publish $object discovery failed (attempt $tries)"
     if [ $tries -ge 5 ]; then
@@ -551,7 +568,7 @@ pub_cfg_button() {
   local body="$1"; shift
   local topic="homeassistant/button/$DEVICE_ID/$object/config"
   local tries=0
-  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+  until mosquitto_pub -t "$topic" -r -m "$body"; do
     tries=$((tries+1))
     log "WARN: publish $object discovery failed (attempt $tries)"
     if [ $tries -ge 5 ]; then
@@ -568,7 +585,7 @@ pub_cfg_update() {
   local body="$1"; shift
   local topic="homeassistant/update/$DEVICE_ID/$object/config"
   local tries=0
-  until mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "$body"; do
+  until mosquitto_pub -t "$topic" -r -m "$body"; do
     tries=$((tries+1))
     log "WARN: publish $object discovery failed (attempt $tries)"
     if [ $tries -ge 5 ]; then
@@ -834,7 +851,7 @@ for i in 1 2; do
       '{name:$name, obj_id:$obj, def_ent_id:$def_ent, uniq_id:$uid, stat_t:$stat, val_tpl:$val_tpl, icon:"mdi:dns", avty_t:$avail, pl_avail:"online", pl_not_avail:"offline", exp_aft:$exp, dev:$dev, entity_category:"diagnostic"}')"
     pub_cfg_sensor "$obj" "$cfg"
   else
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$topic" -r -m "" || true
+    mosquitto_pub -t "$topic" -r -m "" || true
   fi
 done
 pub_cfg_button "reboot" "$reboot_button_cfg"
@@ -865,7 +882,7 @@ while IFS= read -r line; do
   case "$iface" in
     docker*|br-*)
       safe_iface="$(echo "$iface" | tr -c 'A-Za-z0-9_' '_' | sed 's/_\+$//')"
-      mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+      mosquitto_pub \
         -t "homeassistant/sensor/$DEVICE_ID/ip_${safe_iface}/config" -r -m "" || true
       continue
       ;;
@@ -1087,7 +1104,7 @@ EOF
   # restarting it first would SIGTERM this entire process tree mid-upgrade,
   # before ever publishing the "up to date" state. Device would then sit on
   # "update available" until the next hourly ha-mqtt-update-check.timer run.
-  mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+  mosquitto_pub \
     -t "servers/$DEVICE_ID/agent_update" -r \
     -m "$(jq -nc --arg v "$SCRIPT_VERSION" '{installed_version:$v, latest_version:$v, in_progress:false, update_percentage:null}')" || true
 
