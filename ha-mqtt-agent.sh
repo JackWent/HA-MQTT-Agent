@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="32"
+SCRIPT_VERSION="33"
 
 ACTION="${1:--install}"
 
@@ -208,8 +208,17 @@ swap_used_pct="$(free | awk '/Swap:/{ if ($2>0) printf("%.1f", $3*100/$2); else 
 # Load average (1/5/15 min)
 read -r load1 load5 load15 _ < /proc/loadavg
 
-# Reboot required (Debian/Ubuntu apt flag file)
-if [ -f /var/run/reboot-required ]; then reboot_required=true; else reboot_required=false; fi
+# Reboot required: Ubuntu sets the apt flag file; on Debian, check for a newer installed kernel
+if [ -f /var/run/reboot-required ]; then
+  reboot_required=true
+elif [ ! -e /usr/share/update-notifier/notify-reboot-required ] && \
+     newest_kernel="$(find /boot -maxdepth 1 -name 'vmlinuz-*' 2>/dev/null | sed 's#^/boot/vmlinuz-##' | sort -V | tail -n 1)" && \
+     [ -n "$newest_kernel" ] && [ "$newest_kernel" != "$(uname -r)" ]; then
+  # Debian doesn't create /var/run/reboot-required; a newer installed kernel means a reboot is due.
+  reboot_required=true
+else
+  reboot_required=false
+fi
 
 # Failed systemd units
 failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l | tr -d '[:space:]')"

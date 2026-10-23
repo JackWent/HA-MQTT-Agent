@@ -22,7 +22,7 @@ Per host, the agent publishes and auto-discovers these entities in Home Assistan
 | Swap Used (%) | `free` (0 if no swap configured) | every `HEARTBEAT_INTERVAL` |
 | Load Average (1m / 5m / 15m) | `/proc/loadavg` | every `HEARTBEAT_INTERVAL` |
 | Failed Units | `systemctl --failed` count | every `HEARTBEAT_INTERVAL` |
-| Reboot Required | `/var/run/reboot-required` flag file (binary sensor) | every `HEARTBEAT_INTERVAL` |
+| Reboot Required | `/var/run/reboot-required` flag file; on Debian/Proxmox (no flag file), a newer installed kernel than the running one (binary sensor) | every `HEARTBEAT_INTERVAL` |
 | Disk Free / Disk Total (GB) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Disk Free (%) | `df /` | every `HEARTBEAT_INTERVAL` |
 | Updates Pending | `apt-show-versions -u -b` count | hourly |
