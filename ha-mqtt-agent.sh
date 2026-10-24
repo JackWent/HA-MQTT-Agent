@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="33"
+SCRIPT_VERSION="34"
 
 ACTION="${1:--install}"
 
@@ -938,6 +938,10 @@ After=network-online.target
 Type=oneshot
 ExecStart=/usr/local/bin/ha-mqtt-metrics.sh
 EnvironmentFile=/etc/ha-mqtt-agent/env
+# Runs every 30s: keep systemd's Starting/Finished/Deactivated lines (info) out of the
+# journal (~4,300 a day per host, all shipped to Wazuh). Failures are warnings, so still logged;
+# the script's own errors go to /var/log/mqtt-agent.
+LogLevelMax=notice
 RuntimeDirectory=ha-mqtt-agent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
