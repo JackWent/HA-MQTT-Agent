@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="36"
+SCRIPT_VERSION="37"
 
 ACTION="${1:--install}"
 
@@ -75,7 +75,7 @@ ensure_logs() {
 
 write_common_lib() {
   install -d -m 0755 /usr/local/lib/ha-mqtt-agent
-  cat > /usr/local/lib/ha-mqtt-agent/common.sh <<'EOF'
+  put_file /usr/local/lib/ha-mqtt-agent/common.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -107,6 +107,15 @@ log() {
 export XDG_CONFIG_HOME=/etc/ha-mqtt-agent/mosquitto
 EOF
   chmod +x /usr/local/lib/ha-mqtt-agent/common.sh
+}
+
+# Write a file from stdin to a temporary name, then rename it into place. A script that's running
+# while -upgrade replaces it (ha-mqtt-agent-update.sh runs -upgrade itself) keeps reading its old
+# copy, instead of reading the new file from the middle and failing with exit code 2.
+put_file() {
+  local tmp="$1.new.$$"
+  cat > "$tmp"
+  mv -f "$tmp" "$1"
 }
 
 # The mosquitto_pub/sub options file (see install_all): one option per line.
@@ -213,7 +222,7 @@ EOF
   write_common_lib
 
   # metrics (publishes heartbeat + metrics + cached updates + per-iface IPs every run)
-  cat > /usr/local/bin/ha-mqtt-metrics.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-metrics.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
@@ -349,7 +358,7 @@ EOF
   chmod +x /usr/local/bin/ha-mqtt-metrics.sh
 
   # updates (hourly real count; single-instance lock; waits for apt locks; writes cache; non-retained publish)
-  cat > /usr/local/bin/ha-mqtt-updates.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-updates.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
@@ -415,7 +424,7 @@ EOF
   # agent self-update (downloads UPDATE_URL, sanity-checks it, replaces the
   # persisted installer copy, and re-runs -upgrade - called by the command
   # listener below on receipt of the update command)
-  cat > /usr/local/bin/ha-mqtt-agent-update.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-agent-update.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
@@ -493,7 +502,7 @@ EOF
   # presses are a single non-retained MQTT message, so something has to be
   # actively subscribed at the moment one's sent or it's missed entirely).
   # Handles both the reboot button and the agent-update button.
-  cat > /usr/local/bin/ha-mqtt-command-listener.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-command-listener.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
@@ -547,7 +556,7 @@ EOF
   # update check (downloads UPDATE_URL, compares its SCRIPT_VERSION against
   # what's installed, publishes the result - read-only, never applies
   # anything itself; that's ha-mqtt-agent-update.sh's job)
-  cat > /usr/local/bin/ha-mqtt-update-check.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-update-check.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh
@@ -588,7 +597,7 @@ EOF
   chmod +x /usr/local/bin/ha-mqtt-update-check.sh
 
   # discovery (uses heartbeat for availability + expire_after for ALL sensors including updates and IPs)
-  cat > /usr/local/bin/ha-mqtt-discovery.sh <<'EOF'
+  put_file /usr/local/bin/ha-mqtt-discovery.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source /usr/local/lib/ha-mqtt-agent/common.sh

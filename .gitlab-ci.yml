@@ -160,6 +160,16 @@ smoke-test:
       /usr/local/bin/ha-mqtt-update-check.sh
       grep -- '-t servers/.*/agent_update -r -m' /tmp/mqtt-publish.log | tail -1 | grep -v 9999
 
+    - echo "== a signed self-update that rewrites the running updater exits 0 (v37 fix) =="
+    - |
+      ssh-keygen -q -t ed25519 -N '' -f /tmp/test-release-key
+      printf 'ha-mqtt-agent namespaces="ha-mqtt-agent" %s\n' "$(cat /tmp/test-release-key.pub)" >> /usr/local/lib/ha-mqtt-agent/allowed_signers
+      sed 's/^SCRIPT_VERSION=.*/SCRIPT_VERSION="9998"/' ha-mqtt-agent.sh > /tmp/signed.sh
+      ssh-keygen -q -Y sign -f /tmp/test-release-key -n ha-mqtt-agent /tmp/signed.sh < /dev/null
+      sed -i 's#^AGENT_UPDATE_URL=.*#AGENT_UPDATE_URL="file:///tmp/signed.sh"#' /etc/ha-mqtt-agent/env
+      /usr/local/bin/ha-mqtt-agent-update.sh
+      grep -qx 'AGENT_VERSION="9998"' /etc/ha-mqtt-agent/env
+
     - echo "== uninstall =="
     - bash ha-mqtt-agent.sh -uninstall
 
