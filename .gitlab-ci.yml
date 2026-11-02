@@ -126,6 +126,24 @@ smoke-test:
       echo "$output"
       echo "$output" | grep -q "^Upgrade complete\."
 
+    - echo "== allowed_signers holds the release key =="
+    - |
+      key="$(grep -m1 '^SIGNING_KEY=' ha-mqtt-agent.sh | cut -d'"' -f2)"
+      grep -qF "ha-mqtt-agent namespaces=\"ha-mqtt-agent\" $key" /usr/local/lib/ha-mqtt-agent/allowed_signers
+
+    - echo "== an update that isn't signed by the release key is refused =="
+    - |
+      sed 's/^SCRIPT_VERSION=.*/SCRIPT_VERSION="9999"/' ha-mqtt-agent.sh > /tmp/unsigned.sh
+      before="$(sha256sum < /usr/local/lib/ha-mqtt-agent/installer.sh)"
+      sed -i 's#^AGENT_UPDATE_URL=.*#AGENT_UPDATE_URL="file:///tmp/unsigned.sh"#' /etc/ha-mqtt-agent/env
+      if /usr/local/bin/ha-mqtt-agent-update.sh; then echo "unsigned update was accepted" >&2; exit 1; fi
+      ssh-keygen -q -t ed25519 -N '' -f /tmp/not-the-release-key
+      ssh-keygen -q -Y sign -f /tmp/not-the-release-key -n ha-mqtt-agent /tmp/unsigned.sh
+      if /usr/local/bin/ha-mqtt-agent-update.sh; then echo "update signed by another key was accepted" >&2; exit 1; fi
+      test "$(sha256sum < /usr/local/lib/ha-mqtt-agent/installer.sh)" = "$before"
+      /usr/local/bin/ha-mqtt-update-check.sh
+      grep -- '-t servers/.*/agent_update -r -m' /tmp/mqtt-publish.log | tail -1 | grep -v 9999
+
     - echo "== uninstall =="
     - bash ha-mqtt-agent.sh -uninstall
 

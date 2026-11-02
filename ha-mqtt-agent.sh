@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="34"
+SCRIPT_VERSION="35"
 
 ACTION="${1:--install}"
 
@@ -43,6 +43,12 @@ SENSOR_EXPIRE=120          # sensors stale timeout (cpu/ram/disk/updates/ip)
 # Where update checks download this script from, to compare SCRIPT_VERSION
 # against what's installed. Override via env var/.env if ever needed.
 UPDATE_URL="${UPDATE_URL:-https://jackwent.co.uk/downloads/ha-agent/ha-mqtt-agent.sh}"
+
+# Self-updates must be signed with this key: UPDATE_URL.sig, made with
+#   ssh-keygen -Y sign -f <private key> -n ha-mqtt-agent ha-mqtt-agent.sh
+# An update whose signature doesn't verify is refused, so a changed file at UPDATE_URL (or anyone
+# who can press Install over MQTT) can't run their own code as root. The private key stays on Jarvis.
+SIGNING_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKsjQ+laaFJX+9wRKAB09FusulCbVmQ+qgSGmCYxOUm/ ha-mqtt-agent release signing (Jarvis)"
 
 LOG_DIR="/var/log/mqtt-agent"
 LOG_FILE="$LOG_DIR/agent.log"
@@ -103,7 +109,7 @@ EOF
 install_all() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc curl
+  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc curl openssh-client
 
   # Migration: this service was renamed ha-mqtt-reboot-listener ->
   # ha-mqtt-command-listener when the agent-update feature was added (it now
@@ -165,6 +171,10 @@ EOF
   else
     install -m 0755 "${BASH_SOURCE[0]}" /usr/local/lib/ha-mqtt-agent/installer.sh
   fi
+
+  # Who may sign self-updates (see SIGNING_KEY), in ssh-keygen's allowed_signers format.
+  printf 'ha-mqtt-agent namespaces="ha-mqtt-agent" %s\n' "$SIGNING_KEY" > /usr/local/lib/ha-mqtt-agent/allowed_signers
+  chmod 0644 /usr/local/lib/ha-mqtt-agent/allowed_signers
 
   # common lib (logging)
   write_common_lib
@@ -396,10 +406,20 @@ publish_progress() {
 
 INSTALLER_PATH="/usr/local/lib/ha-mqtt-agent/installer.sh"
 TMP_SCRIPT="$(mktemp)"
-trap 'rm -f "$TMP_SCRIPT"' EXIT
+TMP_SIG="$(mktemp)"
+trap 'rm -f "$TMP_SCRIPT" "$TMP_SIG"' EXIT
 
 if ! curl -fsSL --max-time 30 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
   log "ERROR: failed to download updated installer from $AGENT_UPDATE_URL"
+  publish_progress null false "${AGENT_VERSION:-unknown}"
+  exit 1
+fi
+
+# Only run what the release key signed (SIGNING_KEY in the installer).
+if ! curl -fsSL --max-time 30 -o "$TMP_SIG" "$AGENT_UPDATE_URL.sig" \
+  || ! ssh-keygen -Y verify -f /usr/local/lib/ha-mqtt-agent/allowed_signers -I ha-mqtt-agent -n ha-mqtt-agent \
+       -s "$TMP_SIG" < "$TMP_SCRIPT" > /dev/null 2>&1; then
+  log "ERROR: downloaded installer is not signed by the release key, aborting update"
   publish_progress null false "${AGENT_VERSION:-unknown}"
   exit 1
 fi
@@ -509,9 +529,15 @@ installed_version="${AGENT_VERSION:-unknown}"
 latest_version="$installed_version"
 
 TMP_SCRIPT="$(mktemp)"
-trap 'rm -f "$TMP_SCRIPT"' EXIT
+TMP_SIG="$(mktemp)"
+trap 'rm -f "$TMP_SCRIPT" "$TMP_SIG"' EXIT
 
-if curl -fsSL --max-time 20 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
+# Only offer an update that's signed, since an unsigned one would be refused at install.
+if curl -fsSL --max-time 20 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL" \
+  && { ! [ -f /usr/local/lib/ha-mqtt-agent/allowed_signers ] \
+       || { curl -fsSL --max-time 20 -o "$TMP_SIG" "$AGENT_UPDATE_URL.sig" \
+            && ssh-keygen -Y verify -f /usr/local/lib/ha-mqtt-agent/allowed_signers -I ha-mqtt-agent -n ha-mqtt-agent \
+                 -s "$TMP_SIG" < "$TMP_SCRIPT" > /dev/null 2>&1; }; }; then
   remote_version="$(grep -m1 '^SCRIPT_VERSION=' "$TMP_SCRIPT" | sed -E 's/^SCRIPT_VERSION="?([^"[:space:]]*)"?.*/\1/')"
   if [ -n "$remote_version" ]; then
     latest_version="$remote_version"
@@ -520,7 +546,7 @@ if curl -fsSL --max-time 20 -o "$TMP_SCRIPT" "$AGENT_UPDATE_URL"; then
     log "WARN: could not parse SCRIPT_VERSION from downloaded script, reporting up to date"
   fi
 else
-  log "WARN: failed to download $AGENT_UPDATE_URL for update check, reporting up to date"
+  log "WARN: failed to download or verify $AGENT_UPDATE_URL for update check, reporting up to date"
 fi
 
 payload="$(jq -nc --arg installed "$installed_version" --arg latest "$latest_version" '{installed_version:$installed, latest_version:$latest}')"

@@ -40,14 +40,24 @@ to `servers/<hostname>/reboot/set` or `servers/<hostname>/agent_update/set` on
 your MQTT broker can reboot that host, or make it download and run a script
 from `UPDATE_URL` as root — there's no confirmation or extra auth built into
 the agent itself, since MQTT has no per-host access-control concept the agent
-could enforce. The actual safeguards are (1) your MQTT broker's own ACLs, (2)
-`UPDATE_URL` being a source you trust (the update script does check the
-download's syntax and that it has a `SCRIPT_VERSION` line before applying it,
-but that's a sanity check against a corrupted download, not a defense against
-a malicious one), and (3) enabling HA's built-in "confirmation" option on
-these entities' dashboard cards, which prompts before actually sending the
-command. Worth doing all three, especially on hosts you'd rather not reboot or
-auto-update by accident.
+could enforce. Since version 35, though, an update only runs if it's signed: the
+agent downloads `UPDATE_URL.sig` too and checks it with
+`ssh-keygen -Y verify` against the release key (`SIGNING_KEY` in the script,
+written to `/usr/local/lib/ha-mqtt-agent/allowed_signers`). So someone who can
+publish the update command, or change the file at `UPDATE_URL`, can at most
+re-install a version you signed; they can't run their own code. The other
+safeguards are (1) your MQTT broker's own ACLs and (2) enabling HA's built-in
+"confirmation" option on these entities' dashboard cards, which prompts before
+actually sending the command. Worth doing both, especially on hosts you'd rather
+not reboot or auto-update by accident.
+
+**Releasing a version:** bump `SCRIPT_VERSION`, then sign the exact file you publish
+with the release key (kept on Jarvis, `/root/.config/jarvis/ha-agent-signing-key`):
+
+    ssh-keygen -Y sign -f /root/.config/jarvis/ha-agent-signing-key -n ha-mqtt-agent ha-mqtt-agent.sh
+
+and publish `ha-mqtt-agent.sh` and `ha-mqtt-agent.sh.sig` side by side at `UPDATE_URL`.
+An unsigned or mis-signed file is never offered as an update or installed.
 
 ## Requirements
 
@@ -105,6 +115,7 @@ Running `-install` writes and enables the following on the target host:
 
 - `/etc/ha-mqtt-agent/env` — resolved MQTT config for the generated scripts to source
 - `/usr/local/lib/ha-mqtt-agent/common.sh` — shared logging helper (redirects stdout/stderr to the log file)
+- `/usr/local/lib/ha-mqtt-agent/allowed_signers` — the release key (`SIGNING_KEY`) self-updates must be signed with
 - `/usr/local/lib/ha-mqtt-agent/installer.sh` — a persisted copy of this installer itself, so update checks/updates have a stable path to compare against and re-run, independent of wherever the script was originally downloaded to
 - `/usr/local/bin/ha-mqtt-metrics.sh` — publishes heartbeat, CPU/RAM/swap/load/disk state, reboot-required and failed-units flags, and per-interface IPs
 - `/usr/local/bin/ha-mqtt-updates.sh` — counts pending apt upgrades (lock-safe, single-instance via `flock`, waits out apt/dpkg locks) and caches the result
