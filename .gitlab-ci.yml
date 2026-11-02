@@ -63,6 +63,12 @@ smoke-test:
       this_version="$(grep -m1 '^SCRIPT_VERSION=' ha-mqtt-agent.sh)"
       grep -qF "$this_version" /usr/local/lib/ha-mqtt-agent/installer.sh
 
+    - echo "== MQTT over TLS by default (port 8883, system CA store) =="
+    - grep -qx 'MQTT_PORT="8883"' /etc/ha-mqtt-agent/env
+    - grep -qx 'MQTT_TLS="1"' /etc/ha-mqtt-agent/env
+    - grep -qx -- '--capath /etc/ssl/certs' /etc/ha-mqtt-agent/mosquitto/mosquitto_pub
+    - grep -qx -- '-p 8883' /etc/ha-mqtt-agent/mosquitto/mosquitto_sub
+
     - echo "== env file must be root-only (contains MQTT_PASS in plaintext) =="
     - test "$(stat -c '%a' /etc/ha-mqtt-agent/env)" = "600"
 
@@ -125,6 +131,16 @@ smoke-test:
       output="$(bash /usr/local/lib/ha-mqtt-agent/installer.sh -upgrade)"
       echo "$output"
       echo "$output" | grep -q "^Upgrade complete\."
+
+    - echo "== MQTT_TLS=0 keeps plain MQTT on 1883, and a pre-v36 1883 install moves to TLS on upgrade =="
+    - |
+      MQTT_TLS=0 MQTT_PORT=1883 bash ha-mqtt-agent.sh -upgrade > /dev/null
+      grep -qx 'MQTT_PORT="1883"' /etc/ha-mqtt-agent/env
+      ! grep -q -- '--capath' /etc/ha-mqtt-agent/mosquitto/mosquitto_pub
+      sed -i '/^MQTT_TLS=/d' /etc/ha-mqtt-agent/env
+      env -u MQTT_HOST -u MQTT_USER -u MQTT_PASS bash ha-mqtt-agent.sh -upgrade > /dev/null
+      grep -qx 'MQTT_PORT="8883"' /etc/ha-mqtt-agent/env
+      grep -qx -- '--capath /etc/ssl/certs' /etc/ha-mqtt-agent/mosquitto/mosquitto_pub
 
     - echo "== allowed_signers holds the release key =="
     - |

@@ -8,7 +8,7 @@ set -euo pipefail
 # Bump this on every functional change - it's printed at the end of
 # -install and is the only place the version is tracked now that it's
 # no longer in the filename.
-SCRIPT_VERSION="35"
+SCRIPT_VERSION="36"
 
 ACTION="${1:--install}"
 
@@ -29,7 +29,10 @@ if [ -z "${MQTT_HOST:-}" ] && [ -f /etc/ha-mqtt-agent/env ]; then
   source /etc/ha-mqtt-agent/env
 fi
 
-MQTT_PORT="${MQTT_PORT:-1883}"
+# MQTT over TLS (port 8883, broker certificate checked against the system CA store) unless
+# MQTT_TLS=0. MQTT_HOST must then be a name on the broker's certificate, not an IP address.
+MQTT_TLS="${MQTT_TLS:-1}"
+MQTT_PORT="${MQTT_PORT:-}"
 if [[ "$ACTION" != *uninstall* ]]; then
   MQTT_HOST="${MQTT_HOST:?set MQTT_HOST (env var or .env file)}"
   MQTT_USER="${MQTT_USER:?set MQTT_USER (env var or .env file)}"
@@ -106,10 +109,28 @@ EOF
   chmod +x /usr/local/lib/ha-mqtt-agent/common.sh
 }
 
+# The mosquitto_pub/sub options file (see install_all): one option per line.
+mqtt_options() {
+  printf -- '-h %s\n-p %s\n-u %s\n-P %s\n' "$MQTT_HOST" "$MQTT_PORT" "$MQTT_USER" "$MQTT_PASS"
+  [ "$MQTT_TLS" = 1 ] && printf -- '--capath /etc/ssl/certs\n'
+  return 0
+}
+
+# One TLS publish (this host's normal "online" heartbeat) with the options about to be saved.
+mqtt_tls_works() {
+  local dir rc=0
+  dir="$(mktemp -d)"
+  install -m 0600 /dev/null "$dir/mosquitto_pub"
+  mqtt_options > "$dir/mosquitto_pub"
+  XDG_CONFIG_HOME="$dir" timeout 20 mosquitto_pub -t "servers/$DEVICE_ID/heartbeat" -m online > /dev/null 2>&1 || rc=1
+  rm -rf "$dir"
+  return "$rc"
+}
+
 install_all() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc curl openssh-client
+  apt-get install -y --no-install-recommends jq mosquitto-clients apt-show-versions coreutils gawk logrotate iproute2 util-linux psmisc curl openssh-client ca-certificates
 
   # Migration: this service was renamed ha-mqtt-reboot-listener ->
   # ha-mqtt-command-listener when the agent-update feature was added (it now
@@ -131,6 +152,18 @@ install_all() {
   chmod 0700 /etc/ha-mqtt-agent
   install -d -m 0755 /run/ha-mqtt-agent
 
+  # TLS. Hosts installed before v36 have MQTT_PORT=1883 saved: move them to 8883, but only once a
+  # TLS publish from here works, otherwise stay on plain MQTT so the agent never goes offline.
+  if [ "$MQTT_TLS" = 1 ]; then
+    if [ -z "$MQTT_PORT" ] || [ "$MQTT_PORT" = 1883 ]; then MQTT_PORT=8883; fi
+    if ! mqtt_tls_works; then
+      echo "WARN: MQTT over TLS to $MQTT_HOST:$MQTT_PORT failed (is the name on the broker's certificate?); using plain MQTT on 1883" >&2
+      MQTT_TLS=0
+      MQTT_PORT=1883
+    fi
+  fi
+  MQTT_PORT="${MQTT_PORT:-1883}"
+
   # env file - contains MQTT_PASS in plaintext, so lock it down to root-only
   # before writing any content (systemd's EnvironmentFile= is read by the
   # manager process, always root, so this doesn't need to be readable by
@@ -141,6 +174,7 @@ MQTT_HOST="$MQTT_HOST"
 MQTT_PORT="$MQTT_PORT"
 MQTT_USER="$MQTT_USER"
 MQTT_PASS="$MQTT_PASS"
+MQTT_TLS="$MQTT_TLS"
 HEARTBEAT_INTERVAL="$HEARTBEAT_INTERVAL"
 SENSOR_EXPIRE="$SENSOR_EXPIRE"
 AGENT_VERSION="$SCRIPT_VERSION"
@@ -155,8 +189,7 @@ EOF
   local client
   for client in mosquitto_pub mosquitto_sub; do
     install -m 0600 /dev/null "/etc/ha-mqtt-agent/mosquitto/$client"
-    printf -- '-h %s\n-p %s\n-u %s\n-P %s\n' "$MQTT_HOST" "$MQTT_PORT" "$MQTT_USER" "$MQTT_PASS" \
-      > "/etc/ha-mqtt-agent/mosquitto/$client"
+    mqtt_options > "/etc/ha-mqtt-agent/mosquitto/$client"
   done
   export XDG_CONFIG_HOME=/etc/ha-mqtt-agent/mosquitto
 
@@ -451,7 +484,7 @@ publish_progress 60 true "$remote_version"
 # the end (before restarting the command listener - see its comment), so
 # the entity refreshes regardless of whether -upgrade got here via this
 # button or was run manually - no separate refresh step needed here.
-MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" \
+MQTT_HOST="$MQTT_HOST" MQTT_PORT="$MQTT_PORT" MQTT_USER="$MQTT_USER" MQTT_PASS="$MQTT_PASS" MQTT_TLS="${MQTT_TLS:-1}" \
   bash "$INSTALLER_PATH" -upgrade
 EOF
   chmod +x /usr/local/bin/ha-mqtt-agent-update.sh
@@ -1166,7 +1199,7 @@ EOF
   echo "$action_label complete.
 Version: $SCRIPT_VERSION
 Device: $DEVICE_NAME
-Broker: $MQTT_HOST:$MQTT_PORT
+Broker: $MQTT_HOST:$MQTT_PORT ($([ "$MQTT_TLS" = 1 ] && echo TLS || echo "plain MQTT, no TLS"))
 Metrics every ${HEARTBEAT_INTERVAL}s; sensors expire after ${SENSOR_EXPIRE}s if no data.
 RuntimeDirectory preserved across job exits to avoid /run deletions mid-run.
 Updates handle apt locks and prevent overlapping runs.

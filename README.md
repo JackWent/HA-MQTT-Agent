@@ -90,6 +90,7 @@ Other tunables live near the top of the script and can be edited directly if nee
 - `HEARTBEAT_INTERVAL` (default `30`s) — how often metrics/heartbeat are published
 - `SENSOR_EXPIRE` (default `120`s) — how long before a sensor is marked unavailable with no update
 - `SCRIPT_VERSION` — bump this on every functional change to the script; it's published as the "Agent Version" sensor and printed at the end of `-install`, since the version is no longer in the filename
+- `MQTT_TLS` (default `1`) — MQTT over TLS on port 8883, checking the broker's certificate against the system CA store, so `MQTT_HOST` must be a name on that certificate. An install or upgrade only switches to TLS after a test publish works, otherwise it stays on plain MQTT (1883) and says so; `MQTT_TLS=0` keeps plain MQTT. Hosts installed before v36 move from 1883 to 8883 on upgrade.
 - `UPDATE_URL` (default `https://jackwent.co.uk/downloads/ha-agent/ha-mqtt-agent.sh`) — where update checks download this script from to compare `SCRIPT_VERSION`
 
 ## Usage
