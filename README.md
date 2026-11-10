@@ -150,3 +150,7 @@ homeassistant/update/<hostname>/<object>/config           # retained HA discover
 
 `/var/log/mqtt-agent/agent.log`, rotated by logrotate at ~1 MiB (3 rotations kept).
 The installer also self-truncates the log on install if it's already oversized.
+
+## Licence
+
+Released under the MIT licence. See [LICENSE](LICENSE).
