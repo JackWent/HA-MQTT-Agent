@@ -52,9 +52,9 @@ actually sending the command. Worth doing both, especially on hosts you'd rather
 not reboot or auto-update by accident.
 
 **Releasing a version:** bump `SCRIPT_VERSION`, then sign the exact file you publish
-with the release key (kept on Jarvis, `/root/.config/jarvis/ha-agent-signing-key`):
+with the release key (the private key never goes in this repo):
 
-    ssh-keygen -Y sign -f /root/.config/jarvis/ha-agent-signing-key -n ha-mqtt-agent ha-mqtt-agent.sh
+    ssh-keygen -Y sign -f <release-key> -n ha-mqtt-agent ha-mqtt-agent.sh
 
 and publish `ha-mqtt-agent.sh` and `ha-mqtt-agent.sh.sig` side by side at `UPDATE_URL`.
 An unsigned or mis-signed file is never offered as an update or installed.
