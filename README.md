@@ -1,11 +1,61 @@
-# HA MQTT Agent
+<h1 align="center">HA MQTT Agent</h1>
 
-A single bash installer that turns any Debian/Ubuntu Linux host into a lightweight
-monitoring agent for Home Assistant, publishing system metrics over MQTT with
-[Home Assistant MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
-so sensors show up automatically — no YAML configuration needed on the HA side.
+<p align="center">
+  <b>Monitor Ubuntu, Debian and Proxmox servers in Home Assistant with one bash script.</b><br>
+  CPU, RAM, disk, load, IPs and pending apt updates, plus a reboot button and one-click signed self-updates.<br>
+  MQTT Discovery creates every sensor for you, so there's no YAML on the Home Assistant side.
+</p>
 
-## What it monitors
+<p align="center">
+  <img src="https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-18BCF2?logo=homeassistant&logoColor=white" alt="Home Assistant MQTT Discovery">
+  <img src="https://img.shields.io/badge/Ubuntu%20%7C%20Debian%20%7C%20Proxmox-supported-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu, Debian and Proxmox">
+  <img src="https://img.shields.io/badge/bash-single%20file-4EAA25?logo=gnubash&logoColor=white" alt="Single bash file">
+  <img src="https://img.shields.io/badge/MQTT-TLS%20by%20default-660066?logo=mqtt&logoColor=white" alt="MQTT over TLS">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-green" alt="MIT licence"></a>
+</p>
+
+<p align="center">
+  <a href="https://jackwent.co.uk/monitor-ubuntu-servers-in-home-assistant-using-mqtt/"><b>Step-by-step guide</b></a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#every-sensor-it-creates">All sensors</a> ·
+  <a href="https://github.com/JackWent/Ubuntu-Auto-Update">Ubuntu-Auto-Update</a>, its patching partner
+</p>
+
+<p align="center">
+  <img src="docs/device-page.webp" alt="A server's device page in Home Assistant: a Reboot Host button and sensors for agent online, CPU, disk free and total, and RAM" width="720">
+</p>
+
+Run one script on a server and it shows up in Home Assistant as a device with 20-plus entities. It needs no agent framework, no Python and no per-host config, and it works on Debian-based hosts with `apt` and systemd, including Ubuntu, Debian and Proxmox VE. I run it on every server in my homelab.
+
+## What you get
+
+- **Live health:** CPU, RAM, swap, load average, disk free and total, and failed systemd units, every 30 seconds.
+- **Patching at a glance:** a count of pending apt updates, and a *Reboot Required* sensor. On Debian and Proxmox, which have no flag file, that sensor compares the installed and running kernels.
+- **Network details:** one IP sensor per real NIC (Docker bridges are skipped), plus the default gateway and DNS servers.
+- **A Reboot Host button** in Home Assistant that reboots the server cleanly.
+- **One-click agent updates:** a Home Assistant *update* entity offers new versions, and only installs releases that are signed.
+- **Honest availability:** every sensor goes *unavailable* if the agent stops reporting, instead of showing stale numbers. It works well with an "a server went offline" automation.
+- **MQTT over TLS by default**, falling back to plain MQTT only if a test publish fails.
+- **Clean uninstall** with `-uninstall`.
+
+## Quick start
+
+You need a Debian-based host with root access and an MQTT broker. Home Assistant's Mosquitto add-on is fine.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/JackWent/HA-MQTT-Agent/master/ha-mqtt-agent.sh
+sudo MQTT_HOST=homeassistant.example.com MQTT_USER=mqtt MQTT_PASS='your-mqtt-password'   bash ha-mqtt-agent.sh -install
+```
+
+The server appears under **Settings → Devices & services → MQTT** within a minute. Use the hostname on your broker's TLS certificate for `MQTT_HOST`, or add `MQTT_TLS=0` to use plain MQTT on port 1883. See [Configuration](#configuration) for a `.env` file and the other settings.
+
+<details>
+<summary><b>Screenshot: every entity on one device page</b></summary>
+<br>
+<img src="docs/all-sensors.webp" alt="A server's full device page in Home Assistant: controls, sensors, configuration and diagnostic entities, with IPs blurred" width="600">
+</details>
+
+## Every sensor it creates
 
 Per host, the agent publishes and auto-discovers these entities in Home Assistant:
 
@@ -150,6 +200,12 @@ homeassistant/update/<hostname>/<object>/config           # retained HA discover
 
 `/var/log/mqtt-agent/agent.log`, rotated by logrotate at ~1 MiB (3 rotations kept).
 The installer also self-truncates the log on install if it's already oversized.
+
+## Related
+
+- [Ubuntu-Auto-Update](https://github.com/JackWent/Ubuntu-Auto-Update): patches the servers this agent watches, overnight and unattended.
+- [Jarvis](https://github.com/JackWent/Jarvis): the AI assistant that reads these sensors in its morning fleet check.
+- More Home Assistant and homelab write-ups are at [jackwent.co.uk](https://jackwent.co.uk).
 
 ## Licence
 
